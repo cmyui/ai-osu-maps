@@ -18,6 +18,7 @@ checkpoints/
 # Output
 *.osu
 !ai_osu_maps/**
+ai_osu_maps/**/__pycache__/
 
 # IDE
 .vscode/
