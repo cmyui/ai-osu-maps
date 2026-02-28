@@ -1,0 +1,30 @@
+# Environment
+.env
+.venv/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Data & models
+dataset/
+osu_files/
+checkpoints/
+*.pt
+*.pth
+*.ckpt
+
+# Output
+*.osu
+!ai_osu_maps/**
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+
+# Wandb
+wandb/

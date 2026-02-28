@@ -1,0 +1,6 @@
+torch==2.6.0
+torchaudio==2.6.0
+transformers==4.48.3
+slider==0.8.4
+einops==0.8.1
+wandb==0.19.6
