@@ -4,3 +4,4 @@ transformers==4.48.3
 slider==0.8.4
 einops==0.8.1
 wandb==0.19.6
+sentence-transformers==3.4.1
