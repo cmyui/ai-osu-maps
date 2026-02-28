@@ -13,8 +13,8 @@ class ModelConfig:
     dropout: float = 0.1
     num_object_types: int = 4
     num_anchor_types: int = 4
-    mert_dim: int = 1024
-    mert_layers: int = 25
+    mert_dim: int = 768
+    mert_layers: int = 13
 
 
 @dataclass

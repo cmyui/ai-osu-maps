@@ -29,3 +29,7 @@ ai_osu_maps/**/__pycache__/
 
 # Wandb
 wandb/
+
+# Datasets
+dataset_popular/
+top_beatmapsets.tsv

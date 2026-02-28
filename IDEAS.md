@@ -1,0 +1,1 @@
+- Prompt along with initial mp3 "I want an alt map in the style of Monstrata"
