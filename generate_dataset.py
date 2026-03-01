@@ -9,8 +9,8 @@ Each stage is idempotent — completed work is skipped automatically.
 
 Usage:
     python generate_dataset.py \
-        --dataset_dir dataset \
-        --set_ids_file top_beatmapsets.tsv \
+        --dataset-dir dataset \
+        --set-ids-file top_beatmapsets.tsv \
         --limit 10000 \
         --device cuda
 """
@@ -45,7 +45,7 @@ def parse_args() -> argparse.Namespace:
         "--limit", type=int, default=100, help="Max beatmap sets to download"
     )
     parser.add_argument(
-        "--chunk-size", type=int, default=200, help="Download chunk size"
+        "--download-chunk-size", type=int, default=200, help="Download chunk size"
     )
     parser.add_argument(
         "--dry-run", action="store_true", help="List downloads without fetching"
@@ -93,7 +93,7 @@ def main() -> None:
             args.dataset_dir,
             set_ids_file=args.set_ids_file,
             limit=args.limit,
-            chunk_size=args.chunk_size,
+            chunk_size=args.download_chunk_size,
             dry_run=args.dry_run,
         )
     )
