@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 
 BEATMAPS_API = "https://beatmaps.akatsuki.gg"
 OSZ_MIRRORS = [
-    "https://catboy.best/d/{set_id}",
+    # "https://catboy.best/d/{set_id}",  # down as of 2026-03-01
     "https://osu.direct/api/d/{set_id}",
     "https://storage.ripple.moe/d/{set_id}",
 ]
@@ -41,13 +41,13 @@ RETRYABLE_STATUSES = {429, 425, 500, 502, 503}
 MINO_RATELIMIT_KEY = "REDACTED"
 
 MIRROR_CONCURRENCY = {
-    "catboy.best": 2,
+    # "catboy.best": 2,
     "osu.direct": 2,
     "storage.ripple.moe": 1,
 }
 
 MIRROR_EXTRA_HEADERS: dict[str, dict[str, str]] = {
-    "catboy.best": {"x-ratelimit-key": MINO_RATELIMIT_KEY},
+    # "catboy.best": {"x-ratelimit-key": MINO_RATELIMIT_KEY},
 }
 
 MIRROR_SEMAPHORES: dict[str, asyncio.Semaphore] = {}
@@ -462,7 +462,7 @@ async def download_all(
                 _log_mirror_stats()
 
             # Pause between chunks to let rate limits recover
-            if i + chunk_size < len(set_ids) and new_downloads > 0:
+            if i + chunk_size < len(set_ids) and to_download:
                 logger.info("Pausing 5s between chunks")
                 await asyncio.sleep(5.0)
 
