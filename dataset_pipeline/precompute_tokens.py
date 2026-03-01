@@ -6,6 +6,7 @@ can skip the expensive slider.Beatmap.from_path() parsing.
 Usage:
     python -m dataset_pipeline.precompute_tokens --dataset_dir dataset
 """
+
 import argparse
 import logging
 from pathlib import Path
@@ -67,14 +68,16 @@ def run(dataset_dir: str, *, force: bool = False) -> None:
                 if len(events) == 0:
                     continue
                 token_ids = events_to_tokens(events, tokenizer)
-                beatmaps.append({
-                    "token_ids": token_ids,
-                    "difficulty": getattr(beatmap, "star_rating", None) or 5.0,
-                    "cs": float(beatmap.circle_size),
-                    "ar": float(beatmap.approach_rate),
-                    "od": float(beatmap.overall_difficulty),
-                    "hp": float(beatmap.hp_drain_rate),
-                })
+                beatmaps.append(
+                    {
+                        "token_ids": token_ids,
+                        "difficulty": getattr(beatmap, "star_rating", None) or 5.0,
+                        "cs": float(beatmap.circle_size),
+                        "ar": float(beatmap.approach_rate),
+                        "od": float(beatmap.overall_difficulty),
+                        "hp": float(beatmap.hp_drain_rate),
+                    }
+                )
             except Exception:
                 logger.exception("Failed to parse %s", osu_path)
 
@@ -87,12 +90,18 @@ def run(dataset_dir: str, *, force: bool = False) -> None:
         if (done + failed) % 50 == 0 and (done + failed) > 0:
             logger.info(
                 "Progress: %d done, %d cached, %d failed, %d skipped modes",
-                done, cached, failed, skipped_modes,
+                done,
+                cached,
+                failed,
+                skipped_modes,
             )
 
     logger.info(
         "Complete: %d computed, %d already cached, %d failed (no valid beatmaps), %d skipped modes",
-        done, cached, failed, skipped_modes,
+        done,
+        cached,
+        failed,
+        skipped_modes,
     )
 
 
@@ -104,7 +113,9 @@ def parse_args() -> argparse.Namespace:
 
 
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    logging.basicConfig(
+        level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s"
+    )
 
     args = parse_args()
     run(args.dataset_dir, force=args.force)

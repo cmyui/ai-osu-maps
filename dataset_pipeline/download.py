@@ -6,6 +6,7 @@ and organizes them into: dataset/{beatmapset_id}/audio.{ext} + *.osu
 Usage:
     python -m dataset_pipeline.download --dataset_dir dataset --limit 100
 """
+
 import argparse
 import asyncio
 import io
@@ -65,7 +66,7 @@ def _load_dotenv(path: Path) -> None:
             os.environ.setdefault(key.strip(), value.strip())
 
 
-def list_beatmap_ids_from_s3(limit: int) -> list[int]:
+def list_random_beatmap_ids_from_s3(limit: int) -> list[int]:
     """List beatmap IDs from the S3 bucket."""
     s3 = boto3.client(
         "s3",
@@ -77,7 +78,9 @@ def list_beatmap_ids_from_s3(limit: int) -> list[int]:
 
     ids: list[int] = []
     paginator = s3.get_paginator("list_objects_v2")
-    for page in paginator.paginate(Bucket=os.environ["AWS_BUCKET_NAME"], Prefix="beatmaps/"):
+    for page in paginator.paginate(
+        Bucket=os.environ["AWS_BUCKET_NAME"], Prefix="beatmaps/"
+    ):
         for obj in page.get("Contents", []):
             if obj["Size"] == 0:
                 continue
@@ -152,7 +155,12 @@ def _get_mirror_semaphore(mirror_host: str) -> asyncio.Semaphore:
 
 def _record_mirror_stat(mirror_host: str, result: str) -> None:
     if mirror_host not in MIRROR_STATS:
-        MIRROR_STATS[mirror_host] = {"success": 0, "ratelimited": 0, "not_found": 0, "error": 0}
+        MIRROR_STATS[mirror_host] = {
+            "success": 0,
+            "ratelimited": 0,
+            "not_found": 0,
+            "error": 0,
+        }
     MIRROR_STATS[mirror_host][result] += 1
 
 
@@ -164,7 +172,11 @@ def _log_mirror_stats() -> None:
     for host, stats in sorted(MIRROR_STATS.items()):
         logger.info(
             "  %-25s  ok=%-4d  ratelimited=%-4d  not_found=%-4d  err=%-4d",
-            host, stats["success"], stats["ratelimited"], stats["not_found"], stats["error"],
+            host,
+            stats["success"],
+            stats["ratelimited"],
+            stats["not_found"],
+            stats["error"],
         )
 
 
@@ -182,7 +194,9 @@ async def _try_mirror(
     async with semaphore:
         for attempt in range(MAX_RETRIES):
             try:
-                resp = await client.get(url, timeout=30, follow_redirects=True, headers=headers)
+                resp = await client.get(
+                    url, timeout=30, follow_redirects=True, headers=headers
+                )
 
                 if resp.status_code == 200 and len(resp.content) > 0:
                     if not resp.content[:4].startswith(ZIP_MAGIC):
@@ -191,7 +205,8 @@ async def _try_mirror(
                         if attempt == 0:
                             logger.warning(
                                 "Set %d: %s returned non-zip (content-type=%s)",
-                                beatmapset_id, mirror_host,
+                                beatmapset_id,
+                                mirror_host,
                                 resp.headers.get("content-type", "unknown"),
                             )
                         await asyncio.sleep(RETRY_BACKOFF * (attempt + 1) + 3.0)
@@ -199,7 +214,11 @@ async def _try_mirror(
                     _record_mirror_stat(mirror_host, "success")
                     remaining = resp.headers.get("x-ratelimit-remaining")
                     if remaining is not None and int(remaining) < 10:
-                        logger.info("Rate limit low on %s (%s remaining), pausing", mirror_host, remaining)
+                        logger.info(
+                            "Rate limit low on %s (%s remaining), pausing",
+                            mirror_host,
+                            remaining,
+                        )
                         await asyncio.sleep(5.0)
                     return resp.content
 
@@ -210,11 +229,19 @@ async def _try_mirror(
                 if resp.status_code in (429, 425):
                     _record_mirror_stat(mirror_host, "ratelimited")
                     retry_after = resp.headers.get("retry-after")
-                    delay = max(float(retry_after), 3.0) if retry_after else RETRY_BACKOFF * (attempt + 1) + 3.0
+                    delay = (
+                        max(float(retry_after), 3.0)
+                        if retry_after
+                        else RETRY_BACKOFF * (attempt + 1) + 3.0
+                    )
                     logger.warning(
                         "Set %d: HTTP %d from %s, retry %d/%d in %.0fs",
-                        beatmapset_id, resp.status_code, mirror_host,
-                        attempt + 1, MAX_RETRIES, delay,
+                        beatmapset_id,
+                        resp.status_code,
+                        mirror_host,
+                        attempt + 1,
+                        MAX_RETRIES,
+                        delay,
                     )
                     await asyncio.sleep(delay)
                     continue
@@ -224,8 +251,12 @@ async def _try_mirror(
                     delay = RETRY_BACKOFF * (attempt + 1)
                     logger.warning(
                         "Set %d: HTTP %d from %s, retry %d/%d in %.0fs",
-                        beatmapset_id, resp.status_code, mirror_host,
-                        attempt + 1, MAX_RETRIES, delay,
+                        beatmapset_id,
+                        resp.status_code,
+                        mirror_host,
+                        attempt + 1,
+                        MAX_RETRIES,
+                        delay,
                     )
                     await asyncio.sleep(delay)
                     continue
@@ -233,7 +264,10 @@ async def _try_mirror(
                 _record_mirror_stat(mirror_host, "error")
                 logger.warning(
                     "Set %d: HTTP %d from %s (url=%s)",
-                    beatmapset_id, resp.status_code, mirror_host, url,
+                    beatmapset_id,
+                    resp.status_code,
+                    mirror_host,
+                    url,
                 )
                 return None
 
@@ -241,7 +275,11 @@ async def _try_mirror(
                 _record_mirror_stat(mirror_host, "error")
                 logger.warning(
                     "Set %d: timeout from %s (attempt %d/%d, url=%s)",
-                    beatmapset_id, mirror_host, attempt + 1, MAX_RETRIES, url,
+                    beatmapset_id,
+                    mirror_host,
+                    attempt + 1,
+                    MAX_RETRIES,
+                    url,
                 )
                 continue
 
@@ -249,7 +287,10 @@ async def _try_mirror(
                 _record_mirror_stat(mirror_host, "error")
                 logger.warning(
                     "Set %d: %s from %s (url=%s)",
-                    beatmapset_id, type(e).__name__, mirror_host, url,
+                    beatmapset_id,
+                    type(e).__name__,
+                    mirror_host,
+                    url,
                 )
                 return None
 
@@ -304,7 +345,12 @@ def _extract_osz(content: bytes, song_dir: Path) -> bool:
                     osu_found = True
 
             if not audio_found or not osu_found:
-                logger.warning("Set %s: incomplete osz (audio=%s osu=%s)", song_dir.name, audio_found, osu_found)
+                logger.warning(
+                    "Set %s: incomplete osz (audio=%s osu=%s)",
+                    song_dir.name,
+                    audio_found,
+                    osu_found,
+                )
                 if song_dir.exists():
                     shutil.rmtree(song_dir)
                 return False
@@ -376,13 +422,14 @@ async def download_all(
 
     async with httpx.AsyncClient() as client:
         for i in range(0, len(set_ids), chunk_size):
-            chunk = set_ids[i:i + chunk_size]
+            chunk = set_ids[i : i + chunk_size]
             chunk_num = i // chunk_size + 1
             total_chunks = (len(set_ids) + chunk_size - 1) // chunk_size
 
             # Count how many in this chunk are already cached
             to_download = [
-                sid for sid in chunk
+                sid
+                for sid in chunk
                 if not (output_dir / str(sid)).exists()
                 or not any((output_dir / str(sid)).glob("*.osu"))
             ]
@@ -390,7 +437,11 @@ async def download_all(
 
             logger.info(
                 "Chunk %d/%d: %d sets (%d cached, %d to download)",
-                chunk_num, total_chunks, len(chunk), cached, len(to_download),
+                chunk_num,
+                total_chunks,
+                len(chunk),
+                cached,
+                len(to_download),
             )
 
             _reset_mirror_stats()
@@ -401,7 +452,11 @@ async def download_all(
             new_downloads = success - cached
             logger.info(
                 "Chunk %d/%d complete: %d success (%d new), %d failed",
-                chunk_num, total_chunks, success, new_downloads, len(failed),
+                chunk_num,
+                total_chunks,
+                success,
+                new_downloads,
+                len(failed),
             )
             if MIRROR_STATS:
                 _log_mirror_stats()
@@ -412,7 +467,9 @@ async def download_all(
                 await asyncio.sleep(5.0)
 
     if all_failed:
-        logger.warning("Failed to download %d sets: %s", len(all_failed), all_failed[:20])
+        logger.warning(
+            "Failed to download %d sets: %s", len(all_failed), all_failed[:20]
+        )
         if len(all_failed) > 20:
             logger.warning("... and %d more", len(all_failed) - 20)
 
@@ -442,10 +499,12 @@ async def run(
                 if parts and parts[0].isdigit():
                     sets_to_download.append(int(parts[0]))
         sets_to_download = sets_to_download[:limit]
-        logger.info("Loaded %d beatmapset IDs from %s", len(sets_to_download), set_ids_path)
+        logger.info(
+            "Loaded %d beatmapset IDs from %s", len(sets_to_download), set_ids_path
+        )
     else:
         logger.info("Listing beatmap IDs from S3...")
-        beatmap_ids = list_beatmap_ids_from_s3(limit)
+        beatmap_ids = list_random_beatmap_ids_from_s3(limit)
         logger.info("Found %d beatmap IDs in S3", len(beatmap_ids))
 
         logger.info("Resolving beatmap IDs to set IDs...")
@@ -458,32 +517,45 @@ async def run(
         return
 
     success = await download_all(sets_to_download, output_dir, chunk_size)
-    logger.info("Done. Downloaded %d/%d beatmap sets to %s", success, len(sets_to_download), output_dir)
+    logger.info(
+        "Done. Downloaded %d/%d beatmap sets to %s",
+        success,
+        len(sets_to_download),
+        output_dir,
+    )
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Download beatmap sets for training")
     parser.add_argument("--dataset_dir", type=str, default="dataset")
-    parser.add_argument("--limit", type=int, default=100, help="Max beatmap sets to download")
+    parser.add_argument(
+        "--limit", type=int, default=100, help="Max beatmap sets to download"
+    )
     parser.add_argument("--dry_run", action="store_true")
     parser.add_argument("--chunk_size", type=int, default=CHUNK_SIZE)
     parser.add_argument(
-        "--set_ids_file", type=str, default=None,
+        "--set_ids_file",
+        type=str,
+        default=None,
         help="TSV file with beatmapset_id in first column (skips S3/Cheesegull)",
     )
     return parser.parse_args()
 
 
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    logging.basicConfig(
+        level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s"
+    )
     logging.getLogger("httpx").setLevel(logging.WARNING)
     logging.getLogger("httpcore").setLevel(logging.WARNING)
 
     args = parse_args()
-    asyncio.run(run(
-        args.dataset_dir,
-        set_ids_file=args.set_ids_file,
-        limit=args.limit,
-        chunk_size=args.chunk_size,
-        dry_run=args.dry_run,
-    ))
+    asyncio.run(
+        run(
+            args.dataset_dir,
+            set_ids_file=args.set_ids_file,
+            limit=args.limit,
+            chunk_size=args.chunk_size,
+            dry_run=args.dry_run,
+        )
+    )

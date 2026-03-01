@@ -14,6 +14,7 @@ Usage:
         --limit 10000 \
         --device cuda
 """
+
 import argparse
 import asyncio
 import logging
@@ -28,40 +29,58 @@ def parse_args() -> argparse.Namespace:
         description="Generate training dataset (download + precompute audio + precompute tokens)",
     )
 
-    parser.add_argument("--dataset_dir", type=str, required=True, help="Dataset directory")
+    parser.add_argument(
+        "--dataset_dir", type=str, required=True, help="Dataset directory"
+    )
 
     # Download stage
     parser.add_argument(
-        "--set_ids_file", type=str, default=None,
+        "--set_ids_file",
+        type=str,
+        default=None,
         help="TSV file with beatmapset_id in first column (skips S3/Cheesegull)",
     )
-    parser.add_argument("--limit", type=int, default=100, help="Max beatmap sets to download")
-    parser.add_argument("--chunk_size", type=int, default=200, help="Download chunk size")
-    parser.add_argument("--dry_run", action="store_true", help="List downloads without fetching")
+    parser.add_argument(
+        "--limit", type=int, default=100, help="Max beatmap sets to download"
+    )
+    parser.add_argument(
+        "--chunk_size", type=int, default=200, help="Download chunk size"
+    )
+    parser.add_argument(
+        "--dry_run", action="store_true", help="List downloads without fetching"
+    )
 
     # Audio precompute stage
-    parser.add_argument("--device", type=str, default=None, help="Torch device for audio encoding")
+    parser.add_argument(
+        "--device", type=str, default=None, help="Torch device for audio encoding"
+    )
 
     # Both precompute stages
-    parser.add_argument("--force", action="store_true", help="Recompute cached features/tokens")
+    parser.add_argument(
+        "--force", action="store_true", help="Recompute cached features/tokens"
+    )
 
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    logging.basicConfig(
+        level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s"
+    )
     logging.getLogger("httpx").setLevel(logging.WARNING)
     logging.getLogger("httpcore").setLevel(logging.WARNING)
 
     logger.info("=== Stage 1/3: Downloading beatmapsets ===")
-    asyncio.run(download.run(
-        args.dataset_dir,
-        set_ids_file=args.set_ids_file,
-        limit=args.limit,
-        chunk_size=args.chunk_size,
-        dry_run=args.dry_run,
-    ))
+    asyncio.run(
+        download.run(
+            args.dataset_dir,
+            set_ids_file=args.set_ids_file,
+            limit=args.limit,
+            chunk_size=args.chunk_size,
+            dry_run=args.dry_run,
+        )
+    )
 
     if args.dry_run:
         logger.info("Dry run complete, skipping precompute stages")

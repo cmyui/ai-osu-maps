@@ -6,6 +6,7 @@ so training can skip the expensive MERT forward pass.
 Usage:
     python -m dataset_pipeline.precompute_audio --dataset_dir dataset --device mps
 """
+
 import argparse
 import logging
 from pathlib import Path
@@ -30,8 +31,7 @@ def find_audio_file(song_dir: Path) -> Path | None:
 def run(dataset_dir: str, *, device: str | None = None, force: bool = False) -> None:
     """Pre-compute MERT audio features for all songs in the dataset."""
     torch_device = torch.device(
-        device if device
-        else ("cuda" if torch.cuda.is_available() else "cpu")
+        device if device else ("cuda" if torch.cuda.is_available() else "cpu")
     )
     logger.info("Using device: %s", torch_device)
 
@@ -84,12 +84,18 @@ def run(dataset_dir: str, *, device: str | None = None, force: bool = False) -> 
         if (done + failed) % 50 == 0:
             logger.info(
                 "Progress: %d done, %d cached, %d failed, %d skipped",
-                done, cached, failed, skipped,
+                done,
+                cached,
+                failed,
+                skipped,
             )
 
     logger.info(
         "Complete: %d computed, %d already cached, %d failed, %d skipped (no audio)",
-        done, cached, failed, skipped,
+        done,
+        cached,
+        failed,
+        skipped,
     )
 
 
@@ -102,7 +108,9 @@ def parse_args() -> argparse.Namespace:
 
 
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    logging.basicConfig(
+        level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s"
+    )
 
     args = parse_args()
     run(args.dataset_dir, device=args.device, force=args.force)
