@@ -98,6 +98,8 @@ def _add_hitsound_event(
 ) -> None:
     tp = _hitsound_point_at(time, beatmap)
     tp_sample_set = tp.sample_type if tp.sample_type != 0 else 2
+    if not isinstance(addition, str):
+        addition = "0:0"
     addition_split = addition.split(":")
     sample_set = int(addition_split[0]) if addition_split[0] != "0" else tp_sample_set
     addition_set = int(addition_split[1]) if addition_split[1] != "0" else sample_set
