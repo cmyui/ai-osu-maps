@@ -9,6 +9,8 @@ Usage:
 
 import argparse
 import logging
+import queue
+import threading
 from pathlib import Path
 
 import torch
@@ -19,6 +21,7 @@ logger = logging.getLogger(__name__)
 
 AUDIO_EXTENSIONS = {".mp3", ".wav", ".ogg", ".flac"}
 CACHE_FILENAME = "audio_features.pt"
+PREFETCH_BUFFER_SIZE = 4
 
 
 def find_audio_file(song_dir: Path) -> Path | None:
@@ -26,6 +29,20 @@ def find_audio_file(song_dir: Path) -> Path | None:
         for path in song_dir.glob(f"*{ext}"):
             return path
     return None
+
+
+def _prefetch_audio(
+    work_items: list[tuple[Path, Path, Path]],
+    prefetch_queue: queue.Queue[tuple[Path, Path, torch.Tensor | None, BaseException | None] | None],
+) -> None:
+    """Load and resample audio files in a background thread."""
+    for song_dir, cache_path, audio_path in work_items:
+        try:
+            waveform = AudioEncoder.load_audio(audio_path)
+            prefetch_queue.put((song_dir, cache_path, waveform, None))
+        except Exception as exc:
+            prefetch_queue.put((song_dir, cache_path, None, exc))
+    prefetch_queue.put(None)
 
 
 def run(dataset_dir: str, *, device: str | None = None, force: bool = False) -> None:
@@ -54,41 +71,75 @@ def run(dataset_dir: str, *, device: str | None = None, force: bool = False) -> 
     song_dirs = sorted(d for d in dataset_path.iterdir() if d.is_dir())
     logger.info("Found %d song directories", len(song_dirs))
 
-    done = 0
+    # Collect work items, filtering cached/skipped upfront
+    work_items: list[tuple[Path, Path, Path]] = []
     skipped = 0
     cached = 0
-    failed = 0
 
     for song_dir in song_dirs:
         cache_path = song_dir / CACHE_FILENAME
-
         if cache_path.exists() and not force:
             cached += 1
             continue
-
         audio_path = find_audio_file(song_dir)
         if audio_path is None:
             skipped += 1
             continue
+        work_items.append((song_dir, cache_path, audio_path))
 
-        try:
-            waveform = AudioEncoder.load_audio(audio_path).to(torch_device)
-            with torch.no_grad():
-                features = encoder(waveform)  # (1, max_frames, d_model)
-            torch.save(features.squeeze(0).cpu(), cache_path)  # (max_frames, d_model)
-            done += 1
-        except Exception:
-            logger.exception("Failed to process %s", audio_path)
+    logger.info(
+        "To process: %d, already cached: %d, skipped (no audio): %d",
+        len(work_items),
+        cached,
+        skipped,
+    )
+
+    if not work_items:
+        return
+
+    # Prefetch audio loading in background thread so GPU doesn't idle
+    prefetch_queue: queue.Queue[
+        tuple[Path, Path, torch.Tensor | None, BaseException | None] | None
+    ] = queue.Queue(maxsize=PREFETCH_BUFFER_SIZE)
+    prefetch_thread = threading.Thread(
+        target=_prefetch_audio, args=(work_items, prefetch_queue), daemon=True
+    )
+    prefetch_thread.start()
+
+    done = 0
+    failed = 0
+
+    while True:
+        item = prefetch_queue.get()
+        if item is None:
+            break
+
+        song_dir, cache_path, waveform, load_exc = item
+
+        if load_exc is not None:
+            logger.error("Failed to load %s", song_dir, exc_info=load_exc)
             failed += 1
+        else:
+            try:
+                assert waveform is not None
+                waveform = waveform.to(torch_device)
+                with torch.no_grad():
+                    features = encoder(waveform)  # (1, max_frames, d_model)
+                torch.save(features.squeeze(0).cpu(), cache_path)  # (max_frames, d_model)
+                done += 1
+            except Exception:
+                logger.exception("Failed to process %s", song_dir)
+                failed += 1
 
         if (done + failed) % 50 == 0:
             logger.info(
-                "Progress: %d done, %d cached, %d failed, %d skipped",
+                "Progress: %d/%d done, %d failed",
                 done,
-                cached,
+                len(work_items),
                 failed,
-                skipped,
             )
+
+    prefetch_thread.join()
 
     logger.info(
         "Complete: %d computed, %d already cached, %d failed, %d skipped (no audio)",
