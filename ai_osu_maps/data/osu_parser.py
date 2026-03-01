@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from datetime import timedelta
 
 import numpy as np
@@ -76,12 +77,18 @@ def _add_time_event(
         return
 
     tp = _uninherited_point_at(time, beatmap)
+    if tp.ms_per_beat == 0:
+        events.append(Event(EventType.SNAPPING, 0))
+        event_times.append(time_ms)
+        return
+
     beats = (time - tp.offset).total_seconds() * 1000 / tp.ms_per_beat
     snapping = 0
-    for i in range(1, 17):
-        if abs(beats - round(beats * i) / i) * tp.ms_per_beat < 2:
-            snapping = i
-            break
+    if math.isfinite(beats):
+        for i in range(1, 17):
+            if abs(beats - round(beats * i) / i) * tp.ms_per_beat < 2:
+                snapping = i
+                break
 
     events.append(Event(EventType.SNAPPING, snapping))
     event_times.append(time_ms)

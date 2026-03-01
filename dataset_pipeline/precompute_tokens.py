@@ -107,7 +107,10 @@ def _process_song_dir(
     return "failed", skipped_modes, error_paths
 
 
-def run(dataset_dir: str, *, force: bool = False) -> None:
+DEFAULT_MAX_WORKERS = max(1, (os.cpu_count() or 1) - 2)
+
+
+def run(dataset_dir: str, *, force: bool = False, max_workers: int = DEFAULT_MAX_WORKERS) -> None:
     """Pre-compute tokenized beatmaps for all songs in the dataset."""
     dataset_path = Path(dataset_dir)
 
@@ -134,7 +137,6 @@ def run(dataset_dir: str, *, force: bool = False) -> None:
     failed = 0
     skipped_modes = 0
 
-    max_workers = max(1, (os.cpu_count() or 1) - 2)
     logger.info("Using %d worker processes", max_workers)
 
     with concurrent.futures.ProcessPoolExecutor(max_workers=max_workers) as executor:
@@ -183,6 +185,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Pre-compute tokenized beatmaps")
     parser.add_argument("--dataset-dir", type=str, required=True)
     parser.add_argument("--force", action="store_true", help="Recompute even if cached")
+    parser.add_argument("--max-workers", type=int, default=DEFAULT_MAX_WORKERS, help="Max worker processes")
     return parser.parse_args()
 
 
@@ -192,4 +195,4 @@ if __name__ == "__main__":
     )
 
     args = parse_args()
-    run(args.dataset_dir, force=args.force)
+    run(args.dataset_dir, force=args.force, max_workers=args.max_workers)
