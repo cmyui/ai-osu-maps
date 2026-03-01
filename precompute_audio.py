@@ -45,11 +45,22 @@ def main() -> None:
     )
     logger.info("Using device: %s", device)
 
+    dataset_dir = Path(args.dataset_dir)
+    encoder_state_path = dataset_dir / "audio_encoder.pt"
+
     logger.info("Loading MERT audio encoder...")
     encoder = AudioEncoder(d_model=512).to(device)
     encoder.requires_grad_(False)
 
-    dataset_dir = Path(args.dataset_dir)
+    if encoder_state_path.exists() and not args.force:
+        logger.info("Loading saved encoder state from %s", encoder_state_path)
+        encoder.load_state_dict(
+            torch.load(encoder_state_path, map_location=device, weights_only=True)
+        )
+    else:
+        logger.info("Saving encoder state to %s", encoder_state_path)
+        torch.save(encoder.state_dict(), encoder_state_path)
+
     song_dirs = sorted(d for d in dataset_dir.iterdir() if d.is_dir())
     logger.info("Found %d song directories", len(song_dirs))
 

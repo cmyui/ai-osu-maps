@@ -39,6 +39,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--osz", action="store_true", help="Export as .osz")
     parser.add_argument("--stream", action="store_true", help="Stream tokens to stderr")
     parser.add_argument("--no_ema", action="store_true", help="Use trained weights instead of EMA")
+    parser.add_argument(
+        "--audio_encoder", type=str, default=None,
+        help="Path to audio_encoder.pt (overrides checkpoint-embedded state)",
+    )
     return parser.parse_args()
 
 
@@ -52,7 +56,7 @@ def _default_device() -> str:
 
 def load_checkpoint(
     checkpoint_path: str, device: torch.device, use_ema: bool = True,
-) -> tuple[ARTransformer, ARModelConfig]:
+) -> tuple[ARTransformer, ARModelConfig, dict | None]:
     ckpt = torch.load(checkpoint_path, map_location=device, weights_only=False)
 
     model_config: ARModelConfig = ckpt["model_config"]
@@ -77,7 +81,9 @@ def load_checkpoint(
     model.load_state_dict(state_dict)
     model.eval()
 
-    return model, model_config
+    audio_encoder_state = ckpt.get("audio_encoder_state_dict")
+
+    return model, model_config, audio_encoder_state
 
 
 def generate(args: argparse.Namespace) -> None:
@@ -90,7 +96,7 @@ def generate(args: argparse.Namespace) -> None:
 
     # Load model
     logger.info("Loading checkpoint: %s", args.checkpoint)
-    model, model_config = load_checkpoint(
+    model, model_config, audio_encoder_state = load_checkpoint(
         args.checkpoint, device, use_ema=not args.no_ema,
     )
 
@@ -100,6 +106,18 @@ def generate(args: argparse.Namespace) -> None:
     # Encode audio
     logger.info("Encoding audio: %s", args.audio_path)
     audio_encoder = AudioEncoder(d_model=model_config.d_model).to(device)
+    if args.audio_encoder is not None:
+        state = torch.load(args.audio_encoder, map_location=device, weights_only=True)
+        audio_encoder.load_state_dict(state)
+        logger.info("Loaded audio encoder weights from %s", args.audio_encoder)
+    elif audio_encoder_state is not None:
+        audio_encoder.load_state_dict(audio_encoder_state)
+        logger.info("Loaded audio encoder weights from checkpoint")
+    else:
+        logger.warning(
+            "No audio encoder state in checkpoint - using random projection "
+            "(features will not match training data)"
+        )
     audio_encoder.eval()
     waveform = AudioEncoder.load_audio(args.audio_path).to(device)
     with torch.no_grad():

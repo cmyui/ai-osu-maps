@@ -77,20 +77,21 @@ def save_checkpoint(
     global_step: int,
     model_config: ARModelConfig,
     training_config: ARTrainingConfig,
+    audio_encoder_state: dict | None = None,
 ) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    torch.save(
-        {
-            "model_state_dict": model.state_dict(),
-            "ema_state_dict": ema_model.state_dict(),
-            "optimizer_state_dict": optimizer.state_dict(),
-            "epoch": epoch,
-            "global_step": global_step,
-            "model_config": model_config,
-            "training_config": training_config,
-        },
-        path,
-    )
+    ckpt = {
+        "model_state_dict": model.state_dict(),
+        "ema_state_dict": ema_model.state_dict(),
+        "optimizer_state_dict": optimizer.state_dict(),
+        "epoch": epoch,
+        "global_step": global_step,
+        "model_config": model_config,
+        "training_config": training_config,
+    }
+    if audio_encoder_state is not None:
+        ckpt["audio_encoder_state_dict"] = audio_encoder_state
+    torch.save(ckpt, path)
     logger.info("Saved checkpoint to %s", path)
 
 
@@ -176,6 +177,20 @@ def train(args: argparse.Namespace) -> None:
                 "model": vars(model_config),
                 "training": vars(training_config),
             },
+        )
+
+    # Load audio encoder state (saved by precompute_audio.py)
+    audio_encoder_state = None
+    audio_encoder_path = Path(args.dataset_dir) / "audio_encoder.pt"
+    if audio_encoder_path.exists():
+        audio_encoder_state = torch.load(
+            audio_encoder_path, map_location="cpu", weights_only=True,
+        )
+        logger.info("Loaded audio encoder state from %s", audio_encoder_path)
+    else:
+        logger.warning(
+            "No audio_encoder.pt found in %s - inference will use random audio projection",
+            args.dataset_dir,
         )
 
     # Tokenizer
@@ -393,6 +408,7 @@ def train(args: argparse.Namespace) -> None:
                 global_step,
                 model_config,
                 training_config,
+                audio_encoder_state=audio_encoder_state,
             )
 
 
