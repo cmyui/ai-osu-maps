@@ -6,9 +6,9 @@ import torch
 
 from ai_osu_maps.data.event import EventType
 from ai_osu_maps.data.tokenizer import Tokenizer
-from ai_osu_maps.model.ar_transformer import ARTransformer
-from ai_osu_maps.config import ARModelConfig, GenerationConfig
-from ai_osu_maps.inference.sampler_ar import sample_autoregressively
+from ai_osu_maps.model.transformer import Transformer
+from ai_osu_maps.config import ModelConfig, GenerationConfig
+from ai_osu_maps.inference.sampler import sample_autoregressively
 
 
 def print_token_ranges(tokenizer: Tokenizer) -> None:
@@ -21,11 +21,11 @@ def print_token_ranges(tokenizer: Tokenizer) -> None:
     print()
 
 
-def load_checkpoint(path: str, device: torch.device) -> tuple[ARTransformer, ARModelConfig]:
+def load_checkpoint(path: str, device: torch.device) -> tuple[Transformer, ModelConfig]:
     ckpt = torch.load(path, map_location=device, weights_only=False)
-    model_config: ARModelConfig = ckpt["model_config"]
+    model_config: ModelConfig = ckpt["model_config"]
     tokenizer = Tokenizer()
-    model = ARTransformer(
+    model = Transformer(
         vocab_size=tokenizer.vocab_size,
         d_model=model_config.d_model,
         n_heads=model_config.n_heads,
@@ -35,6 +35,7 @@ def load_checkpoint(path: str, device: torch.device) -> tuple[ARTransformer, ARM
         mert_dim=model_config.mert_dim,
         text_dim=model_config.text_dim,
         n_text_tokens=model_config.n_text_tokens,
+        num_mappers=model_config.num_mappers,
     ).to(device)
 
     if "ema_state_dict" in ckpt:
@@ -46,7 +47,7 @@ def load_checkpoint(path: str, device: torch.device) -> tuple[ARTransformer, ARM
 
 
 def main() -> None:
-    checkpoint_path = sys.argv[1] if len(sys.argv) > 1 else "checkpoints_ar/ar_checkpoint_epoch_0004.pt"
+    checkpoint_path = sys.argv[1] if len(sys.argv) > 1 else "checkpoints/checkpoint_epoch_0004.pt"
     max_tokens = int(sys.argv[2]) if len(sys.argv) > 2 else 200
     device = torch.device("cpu")
 
@@ -67,6 +68,8 @@ def main() -> None:
     ar = torch.tensor([9.0], dtype=torch.float32, device=device)
     od = torch.tensor([8.0], dtype=torch.float32, device=device)
     hp = torch.tensor([5.0], dtype=torch.float32, device=device)
+    mapper_id = torch.zeros(1, dtype=torch.long, device=device)
+    year = torch.zeros(1, dtype=torch.float32, device=device)
 
     # First: check raw logits from a single forward pass
     print("\n=== Raw logits check (single step from SOS) ===")
@@ -74,6 +77,7 @@ def main() -> None:
     with torch.no_grad():
         logits = model.generate_next_token(
             sos_tensor, audio_features, difficulty, cs, ar, od, hp,
+            mapper_id, year,
             audio_mask=audio_mask, text_emb=None,
         )  # (1, vocab_size)
 
@@ -103,6 +107,7 @@ def main() -> None:
         with torch.no_grad():
             step_logits = model.generate_next_token(
                 token_tensor, audio_features, difficulty, cs, ar, od, hp,
+                mapper_id, year,
                 audio_mask=audio_mask, text_emb=None,
             )
 

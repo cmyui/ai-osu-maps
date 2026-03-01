@@ -8,7 +8,7 @@ from torch import Tensor
 
 from ai_osu_maps.config import GenerationConfig
 from ai_osu_maps.data.tokenizer import Tokenizer
-from ai_osu_maps.model.ar_transformer import ARTransformer
+from ai_osu_maps.model.transformer import Transformer
 
 
 def top_k_top_p_filter(logits: Tensor, top_k: int = 0, top_p: float = 1.0) -> Tensor:
@@ -43,7 +43,7 @@ def top_k_top_p_filter(logits: Tensor, top_k: int = 0, top_p: float = 1.0) -> Te
 
 @torch.no_grad()
 def sample_autoregressively(
-    model: ARTransformer,
+    model: Transformer,
     tokenizer: Tokenizer,
     audio_features: Tensor,
     difficulty: Tensor,
@@ -51,6 +51,8 @@ def sample_autoregressively(
     ar: Tensor,
     od: Tensor,
     hp: Tensor,
+    mapper_id: Tensor,
+    year: Tensor,
     config: GenerationConfig,
     audio_mask: Tensor | None = None,
     text_emb: Tensor | None = None,
@@ -60,10 +62,12 @@ def sample_autoregressively(
     """Generate token sequence autoregressively.
 
     Args:
-        model: Trained ARTransformer model.
+        model: Trained Transformer model.
         tokenizer: Tokenizer instance.
         audio_features: (1, T_audio, d_model) audio features.
         difficulty, cs, ar, od, hp: (1,) scalar conditions.
+        mapper_id: (1,) long mapper identity.
+        year: (1,) float year condition.
         config: Generation config with temperature, top_k, top_p, etc.
         audio_mask: (1, T_audio) bool mask.
         text_emb: (1, 384) text embeddings or None.
@@ -91,21 +95,28 @@ def sample_autoregressively(
             # CFG: conditioned pass
             logits_cond = model.generate_next_token(
                 token_tensor, audio_features, difficulty, cs, ar, od, hp,
+                mapper_id, year,
                 audio_mask=audio_mask, text_emb=text_emb,
             )
-            # Unconditioned pass (drop text + scalars)
+            # Unconditioned pass (drop all conditions)
+            uncond_drop_mask = {
+                key: torch.ones(1, dtype=torch.bool, device=device)
+                for key in ("difficulty", "cs", "ar", "od", "hp", "mapper", "year")
+            }
             logits_uncond = model.forward(
                 token_tensor, audio_features,
                 torch.zeros_like(difficulty), torch.zeros_like(cs),
                 torch.zeros_like(ar), torch.zeros_like(od), torch.zeros_like(hp),
+                mapper_id, year,
                 audio_mask=audio_mask, text_emb=None,
-                drop_scalars=torch.ones(1, dtype=torch.bool, device=device),
+                drop_mask=uncond_drop_mask,
             )[:, -1, :]
 
             logits = logits_uncond + config.cfg_scale * (logits_cond - logits_uncond)
         else:
             logits = model.generate_next_token(
                 token_tensor, audio_features, difficulty, cs, ar, od, hp,
+                mapper_id, year,
                 audio_mask=audio_mask, text_emb=text_emb,
             )
 

@@ -5,4 +5,4 @@ set -euo pipefail
 
 NUM_GPUS=$(nvidia-smi --query-gpu=count --format=csv,noheader | head -1)
 
-exec torchrun --nproc_per_node="$NUM_GPUS" train_ar.py "$@"
+exec torchrun --nproc_per_node="$NUM_GPUS" train.py "$@"

@@ -14,10 +14,10 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data import DataLoader
 from torch.utils.data.distributed import DistributedSampler
 
-from ai_osu_maps.config import ARModelConfig, ARTrainingConfig
-from ai_osu_maps.data.ar_dataset import ARBeatmapDataset, ar_collate_fn
+from ai_osu_maps.config import ModelConfig, TrainingConfig
+from ai_osu_maps.data.dataset import BeatmapDataset, collate_fn
 from ai_osu_maps.data.tokenizer import Tokenizer
-from ai_osu_maps.model.ar_transformer import ARTransformer
+from ai_osu_maps.model.transformer import Transformer
 
 logger = logging.getLogger(__name__)
 
@@ -59,7 +59,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--batch_size", type=int, default=None)
     parser.add_argument("--lr", type=float, default=None)
     parser.add_argument("--max_epochs", type=int, default=None)
-    parser.add_argument("--checkpoint_dir", type=str, default="checkpoints_ar")
+    parser.add_argument("--checkpoint_dir", type=str, default="checkpoints")
     parser.add_argument(
         "--resume", type=str, default=None, help="Path to checkpoint to resume from"
     )
@@ -111,12 +111,12 @@ def cosine_warmup_schedule(
 def save_checkpoint(
     path: Path,
     model: nn.Module,
-    ema_model: ARTransformer,
+    ema_model: Transformer,
     optimizer: torch.optim.Optimizer,
     epoch: int,
     global_step: int,
-    model_config: ARModelConfig,
-    training_config: ARTrainingConfig,
+    model_config: ModelConfig,
+    training_config: TrainingConfig,
     audio_encoder_state: dict | None = None,
 ) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -139,60 +139,85 @@ def cleanup_old_checkpoints(checkpoint_dir: Path, keep: int) -> None:
     """Delete oldest checkpoints, keeping the most recent `keep` files."""
     if keep <= 0:
         return
-    checkpoints = sorted(checkpoint_dir.glob("ar_checkpoint_epoch_*.pt"))
+    checkpoints = sorted(checkpoint_dir.glob("checkpoint_epoch_*.pt"))
     to_remove = checkpoints[:-keep]
     for old_ckpt in to_remove:
         old_ckpt.unlink()
         logger.info("Removed old checkpoint %s", old_ckpt)
 
 
-def build_rhythm_weight_mask(
-    token_ids: torch.Tensor, tokenizer: Tokenizer, rhythm_weight: float
+def build_token_weight_mask(
+    token_ids: torch.Tensor,
+    tokenizer: Tokenizer,
+    rhythm_weight: float,
+    object_weight: float,
+    position_weight: float,
 ) -> torch.Tensor:
-    """Build per-token loss weight mask with higher weight on rhythm tokens.
+    """Build per-token loss weight mask with higher weight on important tokens.
 
     Args:
         token_ids: (B, S) target token IDs
         tokenizer: Tokenizer instance
-        rhythm_weight: Weight multiplier for rhythm tokens
+        rhythm_weight: Weight multiplier for rhythm/timing tokens
+        object_weight: Weight multiplier for hit object tokens
+        position_weight: Weight multiplier for position tokens
 
     Returns:
         weights: (B, S) loss weight mask
     """
+    from ai_osu_maps.data.event import EventType
+
     weights = torch.ones_like(token_ids, dtype=torch.float32)
 
-    # Get rhythm token ID ranges
-    ts_start, ts_end = tokenizer.event_type_range(
-        tokenizer.event_range[
-            next(
-                er.type
-                for er in tokenizer.EVENT_RANGES
-                if er.type.value == "t"
-            )
-        ].type
-    )
-    snap_start, snap_end = tokenizer.event_type_range(
-        tokenizer.event_range[
-            next(
-                er.type
-                for er in tokenizer.EVENT_RANGES
-                if er.type.value == "snap"
-            )
-        ].type
-    )
+    def _range(event_type: EventType) -> tuple[int, int]:
+        return tokenizer.event_type_range(event_type)
+
+    # Rhythm/timing tokens
+    ts_start, ts_end = _range(EventType.TIME_SHIFT)
+    snap_start, snap_end = _range(EventType.SNAPPING)
+    beat_start, beat_end = _range(EventType.BEAT)
+    measure_start, measure_end = _range(EventType.MEASURE)
+    tp_start, tp_end = _range(EventType.TIMING_POINT)
 
     is_rhythm = (
         ((token_ids >= ts_start) & (token_ids <= ts_end))
         | ((token_ids >= snap_start) & (token_ids <= snap_end))
+        | ((token_ids >= beat_start) & (token_ids <= beat_end))
+        | ((token_ids >= measure_start) & (token_ids <= measure_end))
+        | ((token_ids >= tp_start) & (token_ids <= tp_end))
     )
     weights[is_rhythm] = rhythm_weight
+
+    # Object tokens
+    circle_start, circle_end = _range(EventType.CIRCLE)
+    sh_start, sh_end = _range(EventType.SLIDER_HEAD)
+    spinner_start, spinner_end = _range(EventType.SPINNER)
+    se_start, se_end = _range(EventType.SLIDER_END)
+
+    is_object = (
+        ((token_ids >= circle_start) & (token_ids <= circle_end))
+        | ((token_ids >= sh_start) & (token_ids <= sh_end))
+        | ((token_ids >= spinner_start) & (token_ids <= spinner_end))
+        | ((token_ids >= se_start) & (token_ids <= se_end))
+    )
+    weights[is_object] = object_weight
+
+    # Position tokens
+    pos_start, pos_end = _range(EventType.POS)
+    dist_start, dist_end = _range(EventType.DISTANCE)
+
+    is_position = (
+        ((token_ids >= pos_start) & (token_ids <= pos_end))
+        | ((token_ids >= dist_start) & (token_ids <= dist_end))
+    )
+    weights[is_position] = position_weight
 
     return weights
 
 
 def train(args: argparse.Namespace) -> None:
-    model_config = ARModelConfig()
-    training_config = ARTrainingConfig()
+    model_config = ModelConfig()
+    training_config = TrainingConfig()
     training_config.checkpoint_dir = args.checkpoint_dir
 
     if args.batch_size is not None:
@@ -262,7 +287,7 @@ def train(args: argparse.Namespace) -> None:
     logger.info("Vocab size: %d", tokenizer.vocab_size)
 
     # Dataset
-    dataset = ARBeatmapDataset(
+    dataset = BeatmapDataset(
         args.dataset_dir,
         tokenizer,
         max_seq_len=model_config.max_seq_len,
@@ -286,13 +311,13 @@ def train(args: argparse.Namespace) -> None:
         shuffle=(sampler is None),
         sampler=sampler,
         num_workers=num_workers,
-        collate_fn=ar_collate_fn,
+        collate_fn=collate_fn,
         pin_memory=(device.type == "cuda"),
         drop_last=True,
     )
 
     # Model
-    model = ARTransformer(
+    model = Transformer(
         vocab_size=tokenizer.vocab_size,
         d_model=model_config.d_model,
         n_heads=model_config.n_heads,
@@ -302,13 +327,14 @@ def train(args: argparse.Namespace) -> None:
         mert_dim=model_config.mert_dim,
         text_dim=model_config.text_dim,
         n_text_tokens=model_config.n_text_tokens,
+        num_mappers=model_config.num_mappers,
     ).to(device)
 
     ema_model = copy.deepcopy(model)
     ema_model.requires_grad_(False)
 
     param_count = sum(p.numel() for p in model.parameters())
-    logger.info("ARTransformer: %.1fM parameters", param_count / 1e6)
+    logger.info("Transformer: %.1fM parameters", param_count / 1e6)
 
     # Resume (load into unwrapped model before DDP wrapping)
     start_epoch = 0
@@ -371,6 +397,9 @@ def train(args: argparse.Namespace) -> None:
             ar = batch["ar"].to(device)
             od = batch["od"].to(device)
             hp = batch["hp"].to(device)
+            mapper_id = batch["mapper_id"].to(device)
+            year = batch["year"].to(device)
+            num_objects = batch["num_objects"].to(device)
 
             batch_size = token_ids.shape[0]
 
@@ -379,12 +408,11 @@ def train(args: argparse.Namespace) -> None:
             target_ids = token_ids[:, 1:]
             target_mask = token_mask[:, 1:]
 
-            # Conditioning dropout for CFG
-            drop_scalars = (
-                torch.rand(batch_size, device=device) < training_config.cond_dropout
-            )
-            # Text is None during training (no text prompts in dataset)
-            # drop_text would apply if we had text
+            # Per-condition dropout for CFG
+            drop_mask = {
+                key: torch.rand(batch_size, device=device) < training_config.cond_dropout
+                for key in ("difficulty", "cs", "ar", "od", "hp", "mapper", "year")
+            }
 
             is_accum_step = (
                 (batch_idx + 1) % accum_steps != 0
@@ -395,7 +423,7 @@ def train(args: argparse.Namespace) -> None:
                 with torch.amp.autocast(
                     device.type, dtype=autocast_dtype, enabled=use_autocast
                 ):
-                    logits = model(
+                    logits, log_count_pred = model(
                         input_ids,
                         audio_features,
                         difficulty,
@@ -403,12 +431,15 @@ def train(args: argparse.Namespace) -> None:
                         ar,
                         od,
                         hp,
+                        mapper_id,
+                        year,
                         audio_mask=audio_mask,
                         text_emb=None,
-                        drop_scalars=drop_scalars,
-                    )  # (B, S-1, vocab)
+                        drop_mask=drop_mask,
+                        predict_count=True,
+                    )  # (B, S-1, vocab), (B,)
 
-                    # Cross-entropy loss with rhythm weighting
+                    # Cross-entropy loss with token weighting
                     loss_per_token = nn.functional.cross_entropy(
                         logits.reshape(-1, logits.shape[-1]),
                         target_ids.reshape(-1),
@@ -416,14 +447,22 @@ def train(args: argparse.Namespace) -> None:
                         reduction="none",
                     ).reshape(target_ids.shape)
 
-                    # Apply rhythm weight
-                    weights = build_rhythm_weight_mask(
-                        target_ids, tokenizer, training_config.rhythm_weight
+                    weights = build_token_weight_mask(
+                        target_ids,
+                        tokenizer,
+                        training_config.rhythm_weight,
+                        training_config.object_weight,
+                        training_config.position_weight,
                     )
 
                     masked_loss = loss_per_token * weights * target_mask
-                    loss = masked_loss.sum() / target_mask.sum().clamp(min=1)
-                    loss = loss / accum_steps
+                    main_loss = masked_loss.sum() / target_mask.sum().clamp(min=1)
+
+                    # Auxiliary count loss
+                    log_target = torch.log(num_objects.float().clamp(min=1))
+                    count_loss = nn.functional.l1_loss(log_count_pred, log_target)
+
+                    loss = (main_loss + training_config.count_loss_weight * count_loss) / accum_steps
 
                 loss.backward()
 
@@ -455,10 +494,11 @@ def train(args: argparse.Namespace) -> None:
                 avg_loss = epoch_loss / epoch_steps
                 current_lr = optimizer.param_groups[0]["lr"]
                 logger.info(
-                    "step=%d epoch=%d loss=%.4f lr=%.2e",
+                    "step=%d epoch=%d loss=%.4f count_loss=%.4f lr=%.2e",
                     global_step,
                     epoch,
                     avg_loss,
+                    count_loss.item(),
                     current_lr,
                 )
                 if wandb_run:
@@ -466,6 +506,7 @@ def train(args: argparse.Namespace) -> None:
                         {
                             "loss": loss.item() * accum_steps,
                             "avg_loss": avg_loss,
+                            "count_loss": count_loss.item(),
                             "lr": current_lr,
                             "epoch": epoch,
                         },
@@ -478,7 +519,7 @@ def train(args: argparse.Namespace) -> None:
         if is_main and (epoch + 1) % training_config.save_every_epoch == 0:
             ckpt_path = (
                 Path(training_config.checkpoint_dir)
-                / f"ar_checkpoint_epoch_{epoch:04d}.pt"
+                / f"checkpoint_epoch_{epoch:04d}.pt"
             )
             save_checkpoint(
                 ckpt_path,

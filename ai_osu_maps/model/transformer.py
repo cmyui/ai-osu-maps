@@ -7,7 +7,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch import Tensor
 
-from ai_osu_maps.model.conditioning import ScalarEmbedder
+from ai_osu_maps.model.conditioning import MapperEmbedder, ScalarEmbedder
 
 
 class RoPE(nn.Module):
@@ -150,7 +150,7 @@ class FeedForward(nn.Module):
         return self.net(x)
 
 
-class ARTransformerBlock(nn.Module):
+class TransformerBlock(nn.Module):
     """Single transformer decoder block with optional cross-attention."""
 
     def __init__(
@@ -199,7 +199,7 @@ class ARTransformerBlock(nn.Module):
         return x
 
 
-class ARTransformer(nn.Module):
+class Transformer(nn.Module):
     """Decoder-only autoregressive transformer for beatmap generation.
 
     Conditioned on audio (MERT features) and text (sentence-transformer)
@@ -218,6 +218,7 @@ class ARTransformer(nn.Module):
         mert_dim: int = 768,
         text_dim: int = 384,
         n_text_tokens: int = 4,
+        num_mappers: int = 4096,
     ) -> None:
         super().__init__()
         self.d_model = d_model
@@ -240,15 +241,33 @@ class ARTransformer(nn.Module):
         self.text_proj = nn.Linear(text_dim, d_model * n_text_tokens)
 
         # Scalar conditioning (AdaLN)
+        self.scalar_embeddings: dict[str, ScalarEmbedder] = {}
         self.difficulty_emb = ScalarEmbedder(d_model)
+        self.scalar_embeddings["difficulty"] = self.difficulty_emb
         self.cs_emb = ScalarEmbedder(d_model)
+        self.scalar_embeddings["cs"] = self.cs_emb
         self.ar_emb = ScalarEmbedder(d_model)
+        self.scalar_embeddings["ar"] = self.ar_emb
         self.od_emb = ScalarEmbedder(d_model)
+        self.scalar_embeddings["od"] = self.od_emb
         self.hp_emb = ScalarEmbedder(d_model)
+        self.scalar_embeddings["hp"] = self.hp_emb
+        self.year_emb = ScalarEmbedder(d_model)
+        self.scalar_embeddings["year"] = self.year_emb
+
+        # Mapper conditioning
+        self.mapper_emb = MapperEmbedder(num_mappers, d_model)
+
+        # Object count predictor (auxiliary loss head)
+        self.count_predictor = nn.Sequential(
+            nn.Linear(d_model, d_model),
+            nn.GELU(),
+            nn.Linear(d_model, 1),
+        )
 
         # Transformer blocks: cross-attention every 2nd layer
         self.blocks = nn.ModuleList([
-            ARTransformerBlock(
+            TransformerBlock(
                 d_model,
                 n_heads,
                 dropout,
@@ -282,22 +301,37 @@ class ARTransformer(nn.Module):
         ar: Tensor,
         od: Tensor,
         hp: Tensor,
-        drop_scalars: Tensor | None = None,
+        mapper_id: Tensor,
+        year: Tensor,
+        drop_mask: dict[str, Tensor] | None = None,
     ) -> Tensor:
-        """Sum scalar condition embeddings into (B, d_model).
+        """Sum scalar + mapper condition embeddings into (B, d_model).
 
         Args:
-            drop_scalars: (B,) bool tensor; True = drop all scalar conditions.
+            drop_mask: Per-condition (B,) bool tensors; True = drop that condition.
         """
-        cond = (
-            self.difficulty_emb(difficulty)
-            + self.cs_emb(cs)
-            + self.ar_emb(ar)
-            + self.od_emb(od)
-            + self.hp_emb(hp)
+        scalars = {
+            "difficulty": difficulty,
+            "cs": cs,
+            "ar": ar,
+            "od": od,
+            "hp": hp,
+            "year": year,
+        }
+        cond = torch.zeros(
+            difficulty.shape[0], self.d_model, device=difficulty.device,
         )
-        if drop_scalars is not None:
-            cond = cond * (~drop_scalars).unsqueeze(-1).float()
+        for key, value in scalars.items():
+            emb = self.scalar_embeddings[key](value)
+            if drop_mask is not None and key in drop_mask:
+                emb = emb * (~drop_mask[key]).unsqueeze(-1).float()
+            cond = cond + emb
+
+        mapper_out = self.mapper_emb(mapper_id)
+        if drop_mask is not None and "mapper" in drop_mask:
+            mapper_out = mapper_out * (~drop_mask["mapper"]).unsqueeze(-1).float()
+        cond = cond + mapper_out
+
         return cond
 
     def _build_context(
@@ -340,33 +374,40 @@ class ARTransformer(nn.Module):
         ar: Tensor,
         od: Tensor,
         hp: Tensor,
+        mapper_id: Tensor,
+        year: Tensor,
         audio_mask: Tensor | None = None,
         text_emb: Tensor | None = None,
-        drop_scalars: Tensor | None = None,
+        drop_mask: dict[str, Tensor] | None = None,
         drop_text: Tensor | None = None,
-    ) -> Tensor:
+        predict_count: bool = False,
+    ) -> Tensor | tuple[Tensor, Tensor]:
         """Forward pass for teacher forcing.
 
         Args:
             token_ids: (B, S) input token IDs
             audio_features: (B, T_audio, d_model) pre-computed MERT features
             difficulty, cs, ar, od, hp: (B,) scalar conditions
+            mapper_id: (B,) long mapper identity
+            year: (B,) float year condition
             audio_mask: (B, T_audio) bool mask for audio padding
             text_emb: (B, 384) text embeddings or None
-            drop_scalars: (B,) bool - drop scalar conditions for CFG
+            drop_mask: Per-condition (B,) bool tensors for CFG dropout
             drop_text: (B,) bool - drop text condition for CFG
+            predict_count: If True, also return log(object_count) prediction.
 
         Returns:
-            logits: (B, S, vocab_size)
+            logits (B, S, vocab_size) when predict_count=False, else
+            (logits, log_count_pred (B,)) tuple.
         """
-        B, S = token_ids.shape
-
         # Token embeddings
         x = self.token_emb(token_ids) * math.sqrt(self.d_model)
         x = self.emb_dropout(x)
 
         # Conditioning
-        cond = self._build_conditioning(difficulty, cs, ar, od, hp, drop_scalars)
+        cond = self._build_conditioning(
+            difficulty, cs, ar, od, hp, mapper_id, year, drop_mask,
+        )
         context, context_mask = self._build_context(
             audio_features, audio_mask, text_emb, drop_text
         )
@@ -375,9 +416,19 @@ class ARTransformer(nn.Module):
         for block in self.blocks:
             x = block(x, cond, self.rope, context, context_mask)
 
+        # Count prediction (before ln_final, from raw hidden states)
+        log_count_pred: Tensor | None = None
+        if predict_count:
+            pooled = x.mean(dim=1)  # (B, d_model)
+            log_count_pred = self.count_predictor(pooled).squeeze(-1)  # (B,)
+
         # Output
         x = self.ln_final(x)
-        return self.lm_head(x)
+        logits = self.lm_head(x)
+
+        if log_count_pred is not None:
+            return logits, log_count_pred
+        return logits
 
     @torch.no_grad()
     def generate_next_token(
@@ -389,8 +440,11 @@ class ARTransformer(nn.Module):
         ar: Tensor,
         od: Tensor,
         hp: Tensor,
+        mapper_id: Tensor,
+        year: Tensor,
         audio_mask: Tensor | None = None,
         text_emb: Tensor | None = None,
+        drop_mask: dict[str, Tensor] | None = None,
     ) -> Tensor:
         """Get logits for the next token (last position only).
 
@@ -403,6 +457,7 @@ class ARTransformer(nn.Module):
         """
         logits = self.forward(
             token_ids, audio_features, difficulty, cs, ar, od, hp,
-            audio_mask=audio_mask, text_emb=text_emb,
+            mapper_id, year,
+            audio_mask=audio_mask, text_emb=text_emb, drop_mask=drop_mask,
         )
         return logits[:, -1, :]  # (B, vocab_size)

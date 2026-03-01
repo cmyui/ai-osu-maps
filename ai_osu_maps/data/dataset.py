@@ -14,7 +14,7 @@ AUDIO_FEATURES_FILENAME = "audio_features.pt"
 BEATMAP_TOKENS_FILENAME = "beatmap_tokens.pt"
 
 
-class ARBeatmapDataset(Dataset):
+class BeatmapDataset(Dataset):
     """Dataset for autoregressive beatmap generation.
 
     Loads pre-computed audio features and pre-tokenized beatmaps.
@@ -102,10 +102,13 @@ class ARBeatmapDataset(Dataset):
             "ar": torch.tensor(bm["ar"], dtype=torch.float32),
             "od": torch.tensor(bm["od"], dtype=torch.float32),
             "hp": torch.tensor(bm["hp"], dtype=torch.float32),
+            "mapper_id": torch.tensor(bm.get("mapper_id", 0), dtype=torch.long),
+            "year": torch.tensor(bm.get("year", 0.0), dtype=torch.float32),
+            "num_objects": torch.tensor(bm.get("num_objects", 0), dtype=torch.float32),
         }
 
 
-def ar_collate_fn(batch: list[dict[str, torch.Tensor]]) -> dict[str, torch.Tensor]:
+def collate_fn(batch: list[dict[str, torch.Tensor]]) -> dict[str, torch.Tensor]:
     """Collate function that pads token sequences and audio features."""
     max_tokens = max(item["token_ids"].shape[0] for item in batch)
     max_audio = max(item["audio_features"].shape[0] for item in batch)
@@ -147,4 +150,7 @@ def ar_collate_fn(batch: list[dict[str, torch.Tensor]]) -> dict[str, torch.Tenso
         "ar": torch.stack([item["ar"] for item in batch]),
         "od": torch.stack([item["od"] for item in batch]),
         "hp": torch.stack([item["hp"] for item in batch]),
+        "mapper_id": torch.stack([item["mapper_id"] for item in batch]),
+        "year": torch.stack([item["year"] for item in batch]),
+        "num_objects": torch.stack([item["num_objects"] for item in batch]),
     }

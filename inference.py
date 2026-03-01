@@ -4,12 +4,12 @@ import os
 
 import torch
 
-from ai_osu_maps.config import ARModelConfig, GenerationConfig
-from ai_osu_maps.data.osu_parser_ar import tokens_to_events
+from ai_osu_maps.config import ModelConfig, GenerationConfig
+from ai_osu_maps.data.osu_parser import tokens_to_events
 from ai_osu_maps.data.tokenizer import Tokenizer
-from ai_osu_maps.inference.postprocessor_ar import BeatmapConfig, Postprocessor
-from ai_osu_maps.inference.sampler_ar import sample_autoregressively
-from ai_osu_maps.model.ar_transformer import ARTransformer
+from ai_osu_maps.inference.postprocessor import BeatmapConfig, Postprocessor
+from ai_osu_maps.inference.sampler import sample_autoregressively
+from ai_osu_maps.model.transformer import Transformer
 from ai_osu_maps.model.audio_encoder import AudioEncoder
 
 logger = logging.getLogger(__name__)
@@ -38,6 +38,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--device", type=str, default=None)
     parser.add_argument("--osz", action="store_true", help="Export as .osz")
     parser.add_argument("--stream", action="store_true", help="Stream tokens to stderr")
+    parser.add_argument("--mapper", type=int, default=0, help="Mapper ID (0 = unknown)")
+    parser.add_argument("--year", type=float, default=0.0, help="Year condition (0.0 = unknown)")
     parser.add_argument("--no_ema", action="store_true", help="Use trained weights instead of EMA")
     parser.add_argument(
         "--audio_encoder", type=str, default=None,
@@ -56,13 +58,13 @@ def _default_device() -> str:
 
 def load_checkpoint(
     checkpoint_path: str, device: torch.device, use_ema: bool = True,
-) -> tuple[ARTransformer, ARModelConfig, dict | None]:
+) -> tuple[Transformer, ModelConfig, dict | None]:
     ckpt = torch.load(checkpoint_path, map_location=device, weights_only=False)
 
-    model_config: ARModelConfig = ckpt["model_config"]
+    model_config: ModelConfig = ckpt["model_config"]
 
     tokenizer = Tokenizer()
-    model = ARTransformer(
+    model = Transformer(
         vocab_size=tokenizer.vocab_size,
         d_model=model_config.d_model,
         n_heads=model_config.n_heads,
@@ -72,6 +74,7 @@ def load_checkpoint(
         mert_dim=model_config.mert_dim,
         text_dim=model_config.text_dim,
         n_text_tokens=model_config.n_text_tokens,
+        num_mappers=model_config.num_mappers,
     ).to(device)
 
     if use_ema and "ema_state_dict" in ckpt:
@@ -141,6 +144,8 @@ def generate(args: argparse.Namespace) -> None:
     ar_val = torch.tensor([args.ar], dtype=torch.float32, device=device)
     od_val = torch.tensor([args.od], dtype=torch.float32, device=device)
     hp_val = torch.tensor([args.hp], dtype=torch.float32, device=device)
+    mapper_id = torch.tensor([args.mapper], dtype=torch.long, device=device)
+    year_val = torch.tensor([args.year], dtype=torch.float32, device=device)
 
     # Generation config
     gen_config = GenerationConfig(
@@ -156,6 +161,7 @@ def generate(args: argparse.Namespace) -> None:
     token_ids = sample_autoregressively(
         model, tokenizer, audio_features,
         difficulty, cs_val, ar_val, od_val, hp_val,
+        mapper_id, year_val,
         gen_config,
         audio_mask=audio_mask,
         text_emb=text_emb,

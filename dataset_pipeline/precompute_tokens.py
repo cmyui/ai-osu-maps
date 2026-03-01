@@ -16,8 +16,11 @@ from pathlib import Path
 import torch
 from slider import Beatmap
 
-from ai_osu_maps.data.osu_parser_ar import events_to_tokens, parse_beatmap
+from ai_osu_maps.data.event import EventType
+from ai_osu_maps.data.osu_parser import events_to_tokens, parse_beatmap
 from ai_osu_maps.data.tokenizer import Tokenizer
+
+OBJECT_EVENT_TYPES = frozenset({EventType.CIRCLE, EventType.SLIDER_HEAD, EventType.SPINNER})
 
 logger = logging.getLogger(__name__)
 
@@ -57,6 +60,8 @@ def _process_song_dir(
             if len(events) == 0:
                 continue
             token_ids = events_to_tokens(events, tokenizer)
+            num_objects = sum(1 for e in events if e.type in OBJECT_EVENT_TYPES)
+            mapper_id = hash(beatmap.creator) % 4096 if beatmap.creator else 0
             beatmaps.append(
                 {
                     "token_ids": token_ids,
@@ -65,6 +70,9 @@ def _process_song_dir(
                     "ar": float(beatmap.approach_rate),
                     "od": float(beatmap.overall_difficulty),
                     "hp": float(beatmap.hp_drain_rate),
+                    "mapper_id": mapper_id,
+                    "year": 0.0,  # TODO: source actual year from osu! API or metadata
+                    "num_objects": num_objects,
                 }
             )
         except Exception:
