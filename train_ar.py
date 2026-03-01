@@ -70,6 +70,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--warmup_steps", type=int, default=None)
     parser.add_argument("--gradient_accumulation_steps", type=int, default=None)
     parser.add_argument("--log_every", type=int, default=None)
+    parser.add_argument("--save_every", type=int, default=None, help="Save checkpoint every N epochs")
     parser.add_argument(
         "--max_maps", type=int, default=None,
         help="Limit number of song directories to use",
@@ -195,6 +196,8 @@ def train(args: argparse.Namespace) -> None:
         training_config.gradient_accumulation_steps = args.gradient_accumulation_steps
     if args.log_every is not None:
         training_config.log_every = args.log_every
+    if args.save_every is not None:
+        training_config.save_every_epoch = args.save_every
 
     distributed = _is_distributed()
     rank = _get_rank()
