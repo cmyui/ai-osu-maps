@@ -9,16 +9,26 @@ Runs all three dataset preparation stages sequentially:
 Each stage is idempotent — completed work is skipped automatically.
 
 Usage:
+    # Single GPU
     python generate_dataset.py \
         --dataset-dir dataset \
         --set-ids-file top_beatmapsets.tsv \
         --limit 10000 \
         --device cuda
+
+    # Multi-GPU (audio precompute uses all GPUs; download/tokens run on rank 0 only)
+    torchrun --nproc_per_node=2 generate_dataset.py \
+        --dataset-dir dataset \
+        --set-ids-file top_beatmapsets.tsv \
+        --limit 10000
 """
 
 import argparse
 import asyncio
 import logging
+import os
+
+import torch.distributed as dist
 
 from dataset_pipeline import download, precompute_audio, precompute_tokens
 
@@ -104,19 +114,32 @@ def main() -> None:
     logging.getLogger("httpx").setLevel(logging.WARNING)
     logging.getLogger("httpcore").setLevel(logging.WARNING)
 
+    distributed = int(os.environ.get("WORLD_SIZE", "1")) > 1
+    rank = int(os.environ.get("RANK", "0"))
+
+    if distributed:
+        dist.init_process_group(backend="nccl")
+
+    # Download and token stages are single-process (I/O and CPU bound).
+    # When launched via torchrun, only rank 0 runs them; other ranks wait.
     if not args.skip_download:
-        logger.info("=== Stage 1/3: Downloading beatmapsets ===")
-        asyncio.run(
-            download.run(
-                args.dataset_dir,
-                set_ids_file=args.set_ids_file,
-                limit=args.limit,
-                chunk_size=args.download_chunk_size,
-                dry_run=args.dry_run,
+        if rank == 0:
+            logger.info("=== Stage 1/3: Downloading beatmapsets ===")
+            asyncio.run(
+                download.run(
+                    args.dataset_dir,
+                    set_ids_file=args.set_ids_file,
+                    limit=args.limit,
+                    chunk_size=args.download_chunk_size,
+                    dry_run=args.dry_run,
+                )
             )
-        )
+        if distributed:
+            dist.barrier()
         if args.dry_run:
             logger.info("Dry run complete, skipping precompute stages")
+            if distributed:
+                dist.destroy_process_group()
             return
 
     if not args.skip_audio:
@@ -128,17 +151,23 @@ def main() -> None:
             force=force_audio,
             batch_size=args.audio_batch_size,
         )
+        if distributed:
+            dist.barrier()
 
     if not args.skip_tokens:
-        force_tokens = args.force or args.force_tokens
-        logger.info("=== Stage 3/3: Precomputing beatmap tokens ===")
-        precompute_tokens.run(
-            args.dataset_dir,
-            force=force_tokens,
-            max_workers=args.token_workers,
-        )
+        if rank == 0:
+            force_tokens = args.force or args.force_tokens
+            logger.info("=== Stage 3/3: Precomputing beatmap tokens ===")
+            precompute_tokens.run(
+                args.dataset_dir,
+                force=force_tokens,
+                max_workers=args.token_workers,
+            )
 
     logger.info("=== Dataset generation complete ===")
+
+    if distributed:
+        dist.destroy_process_group()
 
 
 if __name__ == "__main__":

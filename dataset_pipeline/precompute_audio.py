@@ -4,16 +4,22 @@ Saves one .pt file per song directory containing the audio encoder output,
 so training can skip the expensive MERT forward pass.
 
 Usage:
-    python -m dataset_pipeline.precompute_audio --dataset_dir dataset --device mps
+    # Single GPU
+    python -m dataset_pipeline.precompute_audio --dataset_dir dataset --device cuda
+
+    # Multi-GPU (via torchrun)
+    torchrun --nproc_per_node=2 -m dataset_pipeline.precompute_audio --dataset_dir dataset
 """
 
 import argparse
 import logging
+import os
 import queue
 import threading
 from pathlib import Path
 
 import torch
+import torch.distributed as dist
 
 from ai_osu_maps.model.audio_encoder import AudioEncoder
 
@@ -22,6 +28,18 @@ logger = logging.getLogger(__name__)
 AUDIO_EXTENSIONS = {".mp3", ".wav", ".ogg", ".flac"}
 CACHE_FILENAME = "audio_features.pt"
 DEFAULT_BATCH_SIZE = 8
+
+
+def _is_distributed() -> bool:
+    return int(os.environ.get("WORLD_SIZE", "1")) > 1
+
+
+def _get_rank() -> int:
+    return int(os.environ.get("RANK", "0"))
+
+
+def _get_local_rank() -> int:
+    return int(os.environ.get("LOCAL_RANK", "0"))
 
 
 def find_audio_file(song_dir: Path) -> Path | None:
@@ -47,10 +65,27 @@ def _prefetch_audio(
 
 def run(dataset_dir: str, *, device: str | None = None, force: bool = False, batch_size: int = DEFAULT_BATCH_SIZE) -> None:
     """Pre-compute MERT audio features for all songs in the dataset."""
-    torch_device = torch.device(
-        device if device else ("cuda" if torch.cuda.is_available() else "cpu")
-    )
-    logger.info("Using device: %s", torch_device)
+    distributed = _is_distributed()
+    rank = _get_rank()
+    local_rank = _get_local_rank()
+    world_size = int(os.environ.get("WORLD_SIZE", "1"))
+
+    # Only init the process group if we're distributed and it isn't already
+    # initialized (e.g. by generate_dataset.py which manages the lifecycle).
+    owns_process_group = False
+    if distributed and not dist.is_initialized():
+        dist.init_process_group(backend="nccl")
+        owns_process_group = True
+
+    if distributed:
+        torch.cuda.set_device(local_rank)
+        torch_device = torch.device("cuda", local_rank)
+    else:
+        torch_device = torch.device(
+            device if device else ("cuda" if torch.cuda.is_available() else "cpu")
+        )
+
+    logger.info("Using device: %s (rank %d/%d)", torch_device, rank, world_size)
 
     dataset_path = Path(dataset_dir)
     encoder_state_path = dataset_path / "audio_encoder.pt"
@@ -65,13 +100,21 @@ def run(dataset_dir: str, *, device: str | None = None, force: bool = False, bat
             torch.load(encoder_state_path, map_location=torch_device, weights_only=True)
         )
     else:
-        logger.info("Saving encoder state to %s", encoder_state_path)
-        torch.save(encoder.state_dict(), encoder_state_path)
+        if rank == 0:
+            logger.info("Saving encoder state to %s", encoder_state_path)
+            torch.save(encoder.state_dict(), encoder_state_path)
+        if distributed:
+            dist.barrier()
+            if rank != 0:
+                encoder.load_state_dict(
+                    torch.load(encoder_state_path, map_location=torch_device, weights_only=True)
+                )
 
     song_dirs = sorted(d for d in dataset_path.iterdir() if d.is_dir())
     logger.info("Found %d song directories", len(song_dirs))
 
-    # Collect work items, filtering cached/skipped upfront
+    # Collect work items, filtering cached/skipped upfront (all ranks compute
+    # the same list so the round-robin split is deterministic)
     work_items: list[tuple[Path, Path, Path]] = []
     skipped = 0
     cached = 0
@@ -87,14 +130,25 @@ def run(dataset_dir: str, *, device: str | None = None, force: bool = False, bat
             continue
         work_items.append((song_dir, cache_path, audio_path))
 
-    logger.info(
-        "To process: %d, already cached: %d, skipped (no audio): %d",
-        len(work_items),
-        cached,
-        skipped,
-    )
+    # In distributed mode, each rank takes every world_size-th item
+    if distributed:
+        all_work = len(work_items)
+        work_items = work_items[rank::world_size]
+        logger.info(
+            "Rank %d: processing %d/%d items (cached: %d, no audio: %d)",
+            rank, len(work_items), all_work, cached, skipped,
+        )
+    else:
+        logger.info(
+            "To process: %d, already cached: %d, skipped (no audio): %d",
+            len(work_items),
+            cached,
+            skipped,
+        )
 
     if not work_items:
+        if owns_process_group:
+            dist.destroy_process_group()
         return
 
     # Prefetch audio loading in background thread so GPU doesn't idle
@@ -160,12 +214,16 @@ def run(dataset_dir: str, *, device: str | None = None, force: bool = False, bat
     prefetch_thread.join()
 
     logger.info(
-        "Complete: %d computed, %d already cached, %d failed, %d skipped (no audio)",
+        "Complete (rank %d): %d computed, %d already cached, %d failed, %d skipped (no audio)",
+        rank,
         done,
         cached,
         failed,
         skipped,
     )
+
+    if owns_process_group:
+        dist.destroy_process_group()
 
 
 def parse_args() -> argparse.Namespace:

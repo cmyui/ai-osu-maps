@@ -57,7 +57,13 @@ Options:
 Individual stages can also be run standalone:
 ```bash
 python -m dataset_pipeline.download --dataset_dir dataset --set_ids_file top_beatmapsets.tsv --limit 10000
+
+# Single GPU
 python -m dataset_pipeline.precompute_audio --dataset_dir dataset --device cuda
+
+# Multi-GPU (via torchrun)
+torchrun --nproc_per_node=2 -m dataset_pipeline.precompute_audio --dataset_dir dataset
+
 python -m dataset_pipeline.precompute_tokens --dataset_dir dataset
 ```
 
