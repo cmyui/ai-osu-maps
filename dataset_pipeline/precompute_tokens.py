@@ -50,7 +50,7 @@ CACHE_FILENAME = "beatmap_tokens.pt"
 
 def _is_osu_standard(osu_path: Path) -> bool:
     try:
-        with open(osu_path) as f:
+        with open(osu_path, encoding="utf-8-sig") as f:
             for line in f:
                 line = line.strip()
                 if line.startswith("Mode:"):
@@ -75,7 +75,8 @@ def _process_song_dir(
             skipped_modes += 1
             continue
         try:
-            beatmap = Beatmap.from_path(osu_path)
+            with open(osu_path, encoding="utf-8-sig") as f:
+                beatmap = Beatmap.parse(f.read())
             events, _ = parse_beatmap(beatmap)
             if len(events) == 0:
                 continue

@@ -305,6 +305,11 @@ def _parse_slider(
         ],
     )
 
+    try:
+        end_pos = np.array(slider.curve(1))
+    except (IndexError, ValueError, ZeroDivisionError):
+        end_pos = np.array(slider.position)
+
     return _add_group(
         EventType.SLIDER_END,
         slider.end_time,
@@ -312,7 +317,7 @@ def _parse_slider(
         event_times,
         beatmap,
         time_event=True,
-        pos=np.array(slider.curve(1)),
+        pos=end_pos,
         last_pos=last_pos,
         hitsound_ref_times=[slider.end_time],
         hitsounds=[slider.edge_sounds[-1] if len(slider.edge_sounds) > 0 else 0],
