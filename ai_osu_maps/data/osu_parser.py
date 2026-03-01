@@ -101,11 +101,11 @@ def _add_hitsound_event(
     if not isinstance(addition, str):
         addition = "0:0"
     addition_split = addition.split(":")
-    sample_set = int(addition_split[0]) if addition_split[0] != "0" else tp_sample_set
-    addition_set = int(addition_split[1]) if addition_split[1] != "0" else sample_set
+    sample_set = int(addition_split[0]) if addition_split[0] not in ("", "0") else tp_sample_set
+    addition_set = int(addition_split[1]) if len(addition_split) > 1 and addition_split[1] not in ("", "0") else sample_set
     volume = (
         int(addition_split[3])
-        if len(addition_split) > 3 and addition_split[3] != "0"
+        if len(addition_split) > 3 and addition_split[3] not in ("", "0")
         else tp.volume
     )
 
@@ -305,7 +305,7 @@ def _parse_slider(
         event_times,
         beatmap,
         time_event=True,
-        pos=np.asarray(slider.curve(1)).flatten()[:2],
+        pos=np.array(slider.curve(1)),
         last_pos=last_pos,
         hitsound_ref_times=[slider.end_time],
         hitsounds=[slider.edge_sounds[-1] if len(slider.edge_sounds) > 0 else 0],
@@ -371,7 +371,11 @@ def _parse_timing(beatmap: Beatmap) -> tuple[list[Event], list[int]]:
     events: list[Event] = []
     event_times: list[int] = []
 
-    last_ho = beatmap.hit_objects(stacking=False)[-1]
+    hit_objects = beatmap.hit_objects(stacking=False)
+    if len(hit_objects) == 0:
+        return [], []
+
+    last_ho = hit_objects[-1]
     last_time = last_ho.end_time if hasattr(last_ho, "end_time") else last_ho.time
 
     timing_points = [tp for tp in timing if tp.bpm]
