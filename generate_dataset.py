@@ -17,6 +17,7 @@ Usage:
 
 import argparse
 import asyncio
+import concurrent.futures
 import logging
 
 from dataset_pipeline import download, precompute_audio, precompute_tokens
@@ -86,11 +87,16 @@ def main() -> None:
         logger.info("Dry run complete, skipping precompute stages")
         return
 
-    logger.info("=== Stage 2/3: Precomputing audio features ===")
-    precompute_audio.run(args.dataset_dir, device=args.device, force=args.force)
-
-    logger.info("=== Stage 3/3: Precomputing beatmap tokens ===")
-    precompute_tokens.run(args.dataset_dir, force=args.force)
+    logger.info("=== Stage 2/3: Precomputing audio features + beatmap tokens ===")
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+        audio_future = executor.submit(
+            precompute_audio.run, args.dataset_dir, device=args.device, force=args.force
+        )
+        tokens_future = executor.submit(
+            precompute_tokens.run, args.dataset_dir, force=args.force
+        )
+        audio_future.result()
+        tokens_future.result()
 
     logger.info("=== Dataset generation complete ===")
 
