@@ -2,55 +2,83 @@ import argparse
 import copy
 import logging
 import math
+import os
+from contextlib import contextmanager
 from pathlib import Path
 
 import torch
+import torch.distributed as dist
 import torch.nn as nn
 import wandb
+from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data import DataLoader
+from torch.utils.data.distributed import DistributedSampler
 
-from ai_osu_maps.config import Config
-from ai_osu_maps.data.dataset import BeatmapDataset
-from ai_osu_maps.data.dataset import CachedAudioBeatmapDataset
-from ai_osu_maps.data.dataset import cached_audio_collate_fn
-from ai_osu_maps.data.dataset import collate_fn
-from ai_osu_maps.data.osu_only_dataset import OsuOnlyDataset
-from ai_osu_maps.data.osu_only_dataset import osu_only_collate_fn
-from ai_osu_maps.model.audio_encoder import AudioEncoder
-from ai_osu_maps.model.flow_transformer import FlowTransformer
+from ai_osu_maps.config import ARModelConfig, ARTrainingConfig
+from ai_osu_maps.data.ar_dataset import ARBeatmapDataset, ar_collate_fn
+from ai_osu_maps.data.tokenizer import Tokenizer
+from ai_osu_maps.model.ar_transformer import ARTransformer
 
 logger = logging.getLogger(__name__)
 
-COND_KEYS = ("difficulty", "cs", "ar", "od", "hp", "mapper", "year")
+
+def _is_distributed() -> bool:
+    return int(os.environ.get("WORLD_SIZE", "1")) > 1
+
+
+def _get_rank() -> int:
+    return int(os.environ.get("RANK", "0"))
+
+
+def _get_local_rank() -> int:
+    return int(os.environ.get("LOCAL_RANK", "0"))
+
+
+def _is_main_process() -> bool:
+    return _get_rank() == 0
+
+
+@contextmanager
+def _maybe_no_sync(model: nn.Module, skip_sync: bool):
+    if skip_sync and isinstance(model, DDP):
+        with model.no_sync():
+            yield
+    else:
+        yield
+
+
+def _unwrap_model(model: nn.Module) -> nn.Module:
+    return model.module if isinstance(model, DDP) else model
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Train flow-matching beatmap generator"
+        description="Train autoregressive beatmap generator"
     )
     parser.add_argument("--dataset_dir", type=str, default="dataset")
     parser.add_argument("--batch_size", type=int, default=None)
     parser.add_argument("--lr", type=float, default=None)
     parser.add_argument("--max_epochs", type=int, default=None)
-    parser.add_argument("--checkpoint_dir", type=str, default="checkpoints")
+    parser.add_argument("--checkpoint_dir", type=str, default="checkpoints_ar")
     parser.add_argument(
         "--resume", type=str, default=None, help="Path to checkpoint to resume from"
     )
     parser.add_argument("--device", type=str, default=None)
     parser.add_argument("--wandb_project", type=str, default=None)
-    parser.add_argument(
-        "--no_audio",
-        action="store_true",
-        help="Train without audio (random audio features)",
-    )
-    parser.add_argument(
-        "--cached_audio",
-        action="store_true",
-        help="Use pre-computed audio features from disk (run precompute_audio.py first)",
-    )
-    parser.add_argument("--max_objects", type=int, default=None)
+    parser.add_argument("--max_seq_len", type=int, default=None)
     parser.add_argument("--n_layers", type=int, default=None)
     parser.add_argument("--warmup_steps", type=int, default=None)
+    parser.add_argument("--gradient_accumulation_steps", type=int, default=None)
+    parser.add_argument("--log_every", type=int, default=None)
+    parser.add_argument("--save_every", type=int, default=None, help="Save checkpoint every N epochs")
+    parser.add_argument(
+        "--max_maps", type=int, default=None,
+        help="Limit number of song directories to use",
+    )
+    parser.add_argument(
+        "--keep_checkpoints", type=int, default=0,
+        help="Number of most recent checkpoints to keep (0 = keep all)",
+    )
     return parser.parse_args()
 
 
@@ -62,68 +90,16 @@ def _default_device() -> str:
     return "cpu"
 
 
-def build_config(args: argparse.Namespace) -> Config:
-    config = Config()
-    config.data.dataset_dir = args.dataset_dir
-    config.training.checkpoint_dir = args.checkpoint_dir
-    if args.batch_size is not None:
-        config.training.batch_size = args.batch_size
-    if args.lr is not None:
-        config.training.lr = args.lr
-    if args.max_epochs is not None:
-        config.training.max_epochs = args.max_epochs
-    if args.max_objects is not None:
-        config.data.max_objects = args.max_objects
-    if args.n_layers is not None:
-        config.model.n_layers = args.n_layers
-    if args.warmup_steps is not None:
-        config.training.warmup_steps = args.warmup_steps
-    return config
-
-
-def sample_logit_normal(
-    batch_size: int,
-    mean: float,
-    std: float,
-    device: torch.device,
-) -> torch.Tensor:
-    """Sample timesteps from logit-normal distribution in (0, 1)."""
-    z = torch.randn(batch_size, device=device) * std + mean
-    return torch.sigmoid(z)
-
-
-def build_drop_mask(
-    batch_size: int,
-    cond_dropout: float,
-    device: torch.device,
-) -> dict[str, torch.Tensor]:
-    """Build per-condition dropout masks for classifier-free guidance training."""
-    mask: dict[str, torch.Tensor] = {}
-    for key in COND_KEYS:
-        mask[key] = torch.rand(batch_size, device=device) < cond_dropout
-    # Never drop timestep
-    mask["timestep"] = torch.zeros(batch_size, dtype=torch.bool, device=device)
-    return mask
-
-
 @torch.no_grad()
-def update_ema(
-    ema_model: nn.Module,
-    model: nn.Module,
-    decay: float,
-) -> None:
-    """Update EMA model parameters."""
-    for ema_param, param in zip(ema_model.parameters(), model.parameters()):
+def update_ema(ema_model: nn.Module, model: nn.Module, decay: float) -> None:
+    source = _unwrap_model(model)
+    for ema_param, param in zip(ema_model.parameters(), source.parameters()):
         ema_param.lerp_(param, 1.0 - decay)
 
 
 def cosine_warmup_schedule(
-    step: int,
-    warmup_steps: int,
-    total_steps: int,
-    min_lr_ratio: float,
+    step: int, warmup_steps: int, total_steps: int, min_lr_ratio: float
 ) -> float:
-    """Cosine decay with linear warmup. Returns lr multiplier in [min_lr_ratio, 1]."""
     if step < warmup_steps:
         return step / max(warmup_steps, 1)
     progress = (step - warmup_steps) / max(total_steps - warmup_steps, 1)
@@ -134,266 +110,394 @@ def cosine_warmup_schedule(
 
 def save_checkpoint(
     path: Path,
-    model: FlowTransformer,
-    ema_model: FlowTransformer,
+    model: nn.Module,
+    ema_model: ARTransformer,
     optimizer: torch.optim.Optimizer,
     epoch: int,
     global_step: int,
-    config: Config,
+    model_config: ARModelConfig,
+    training_config: ARTrainingConfig,
+    audio_encoder_state: dict | None = None,
 ) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    torch.save(
-        {
-            "model_state_dict": model.state_dict(),
-            "ema_state_dict": ema_model.state_dict(),
-            "optimizer_state_dict": optimizer.state_dict(),
-            "epoch": epoch,
-            "global_step": global_step,
-            "config": config,
-        },
-        path,
-    )
+    ckpt = {
+        "model_state_dict": _unwrap_model(model).state_dict(),
+        "ema_state_dict": ema_model.state_dict(),
+        "optimizer_state_dict": optimizer.state_dict(),
+        "epoch": epoch,
+        "global_step": global_step,
+        "model_config": model_config,
+        "training_config": training_config,
+    }
+    if audio_encoder_state is not None:
+        ckpt["audio_encoder_state_dict"] = audio_encoder_state
+    torch.save(ckpt, path)
     logger.info("Saved checkpoint to %s", path)
 
 
+def cleanup_old_checkpoints(checkpoint_dir: Path, keep: int) -> None:
+    """Delete oldest checkpoints, keeping the most recent `keep` files."""
+    if keep <= 0:
+        return
+    checkpoints = sorted(checkpoint_dir.glob("ar_checkpoint_epoch_*.pt"))
+    to_remove = checkpoints[:-keep]
+    for old_ckpt in to_remove:
+        old_ckpt.unlink()
+        logger.info("Removed old checkpoint %s", old_ckpt)
+
+
+def build_rhythm_weight_mask(
+    token_ids: torch.Tensor, tokenizer: Tokenizer, rhythm_weight: float
+) -> torch.Tensor:
+    """Build per-token loss weight mask with higher weight on rhythm tokens.
+
+    Args:
+        token_ids: (B, S) target token IDs
+        tokenizer: Tokenizer instance
+        rhythm_weight: Weight multiplier for rhythm tokens
+
+    Returns:
+        weights: (B, S) loss weight mask
+    """
+    weights = torch.ones_like(token_ids, dtype=torch.float32)
+
+    # Get rhythm token ID ranges
+    ts_start, ts_end = tokenizer.event_type_range(
+        tokenizer.event_range[
+            next(
+                er.type
+                for er in tokenizer.EVENT_RANGES
+                if er.type.value == "t"
+            )
+        ].type
+    )
+    snap_start, snap_end = tokenizer.event_type_range(
+        tokenizer.event_range[
+            next(
+                er.type
+                for er in tokenizer.EVENT_RANGES
+                if er.type.value == "snap"
+            )
+        ].type
+    )
+
+    is_rhythm = (
+        ((token_ids >= ts_start) & (token_ids <= ts_end))
+        | ((token_ids >= snap_start) & (token_ids <= snap_end))
+    )
+    weights[is_rhythm] = rhythm_weight
+
+    return weights
+
+
 def train(args: argparse.Namespace) -> None:
-    config = build_config(args)
-    device = torch.device(args.device or _default_device())
+    model_config = ARModelConfig()
+    training_config = ARTrainingConfig()
+    training_config.checkpoint_dir = args.checkpoint_dir
+
+    if args.batch_size is not None:
+        training_config.batch_size = args.batch_size
+    if args.lr is not None:
+        training_config.lr = args.lr
+    if args.max_epochs is not None:
+        training_config.max_epochs = args.max_epochs
+    if args.max_seq_len is not None:
+        model_config.max_seq_len = args.max_seq_len
+    if args.n_layers is not None:
+        model_config.n_layers = args.n_layers
+    if args.warmup_steps is not None:
+        training_config.warmup_steps = args.warmup_steps
+    if args.gradient_accumulation_steps is not None:
+        training_config.gradient_accumulation_steps = args.gradient_accumulation_steps
+    if args.log_every is not None:
+        training_config.log_every = args.log_every
+    if args.save_every is not None:
+        training_config.save_every_epoch = args.save_every
+
+    distributed = _is_distributed()
+    rank = _get_rank()
+    local_rank = _get_local_rank()
+    is_main = _is_main_process()
+
+    if distributed:
+        dist.init_process_group(backend="nccl")
+        torch.cuda.set_device(local_rank)
+        device = torch.device("cuda", local_rank)
+    else:
+        device = torch.device(args.device or _default_device())
 
     logging.basicConfig(
-        level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s"
+        level=logging.INFO if is_main else logging.WARNING,
+        format="%(asctime)s %(levelname)s %(message)s",
     )
-    logger.info("Using device: %s", device)
+    logger.info("Using device: %s (rank %d/%d)", device, rank, int(os.environ.get("WORLD_SIZE", "1")))
 
-    # Optional wandb
+    # wandb (rank 0 only)
     wandb_run = None
-    if args.wandb_project:
-        wandb_run = wandb.init(project=args.wandb_project, config=vars(config))
+    if args.wandb_project and is_main:
+        wandb_run = wandb.init(
+            project=args.wandb_project,
+            config={
+                "model": vars(model_config),
+                "training": vars(training_config),
+            },
+        )
+
+    # Load audio encoder state (saved by precompute_audio.py)
+    audio_encoder_state = None
+    audio_encoder_path = Path(args.dataset_dir) / "audio_encoder.pt"
+    if audio_encoder_path.exists():
+        audio_encoder_state = torch.load(
+            audio_encoder_path, map_location="cpu", weights_only=True,
+        )
+        logger.info("Loaded audio encoder state from %s", audio_encoder_path)
+    else:
+        logger.warning(
+            "No audio_encoder.pt found in %s - inference will use random audio projection",
+            args.dataset_dir,
+        )
+
+    # Tokenizer
+    tokenizer = Tokenizer()
+    logger.info("Vocab size: %d", tokenizer.vocab_size)
 
     # Dataset
-    if args.no_audio:
-        dataset = OsuOnlyDataset(config.data, augment=True)
-        loader_collate = osu_only_collate_fn
-    elif args.cached_audio:
-        dataset = CachedAudioBeatmapDataset(config.data, augment=True)
-        loader_collate = cached_audio_collate_fn
-    else:
-        dataset = BeatmapDataset(config.data, augment=True)
-        loader_collate = collate_fn
-
+    dataset = ARBeatmapDataset(
+        args.dataset_dir,
+        tokenizer,
+        max_seq_len=model_config.max_seq_len,
+        max_maps=args.max_maps,
+    )
     logger.info("Dataset: %d beatmaps", len(dataset))
     if len(dataset) == 0:
-        logger.error("No beatmaps found in %s", config.data.dataset_dir)
+        logger.error("No beatmaps found in %s", args.dataset_dir)
         return
 
-    effective_batch_size = min(config.training.batch_size, len(dataset))
-    # Use num_workers=0 on MPS to avoid multiprocessing conflicts
-    num_workers = config.data.num_workers if device.type == "cuda" else 0
+    effective_batch_size = min(training_config.batch_size, len(dataset))
+    num_workers = training_config.num_workers if device.type == "cuda" else 0
+
+    sampler = None
+    if distributed:
+        sampler = DistributedSampler(dataset, shuffle=True)
+
     dataloader = DataLoader(
         dataset,
         batch_size=effective_batch_size,
-        shuffle=True,
+        shuffle=(sampler is None),
+        sampler=sampler,
         num_workers=num_workers,
-        collate_fn=loader_collate,
+        collate_fn=ar_collate_fn,
         pin_memory=(device.type == "cuda"),
         drop_last=True,
     )
 
-    # Models
-    audio_encoder = None
-    if not args.no_audio and not args.cached_audio:
-        audio_encoder = AudioEncoder(d_model=config.model.d_model).to(device)
-        audio_encoder.eval()
+    # Model
+    model = ARTransformer(
+        vocab_size=tokenizer.vocab_size,
+        d_model=model_config.d_model,
+        n_heads=model_config.n_heads,
+        n_layers=model_config.n_layers,
+        dropout=model_config.dropout,
+        max_seq_len=model_config.max_seq_len,
+        mert_dim=model_config.mert_dim,
+        text_dim=model_config.text_dim,
+        n_text_tokens=model_config.n_text_tokens,
+    ).to(device)
 
-    model = FlowTransformer(config.model).to(device)
     ema_model = copy.deepcopy(model)
     ema_model.requires_grad_(False)
 
     param_count = sum(p.numel() for p in model.parameters())
-    logger.info("FlowTransformer: %.1fM parameters", param_count / 1e6)
+    logger.info("ARTransformer: %.1fM parameters", param_count / 1e6)
 
-    # Optimizer
-    optimizer = torch.optim.AdamW(
-        model.parameters(),
-        lr=config.training.lr,
-        weight_decay=config.training.weight_decay,
-        betas=(0.9, 0.95),
-    )
-
-    # Resume
+    # Resume (load into unwrapped model before DDP wrapping)
     start_epoch = 0
     global_step = 0
     if args.resume:
         ckpt = torch.load(args.resume, map_location=device, weights_only=False)
         model.load_state_dict(ckpt["model_state_dict"])
         ema_model.load_state_dict(ckpt["ema_state_dict"])
-        optimizer.load_state_dict(ckpt["optimizer_state_dict"])
         start_epoch = ckpt["epoch"] + 1
         global_step = ckpt["global_step"]
         logger.info("Resumed from epoch %d, step %d", start_epoch, global_step)
 
-    total_steps = config.training.max_epochs * len(dataloader)
-    min_lr_ratio = config.training.min_lr / config.training.lr
+    # Wrap in DDP after loading weights
+    if distributed:
+        model = DDP(model, device_ids=[local_rank], find_unused_parameters=True)
 
-    # Build loss weights per field
-    loss_weights = torch.ones(config.model.obj_dim, device=device)
-    loss_weights[0:2] = config.training.loss_weight_time
-    loss_weights[4:8] = config.training.loss_weight_type
-
-    use_autocast = device.type == "cuda"
-
-    logger.info(
-        "Starting training: %d epochs, %d steps/epoch, batch_size=%d, lr=%.1e",
-        config.training.max_epochs,
-        len(dataloader),
-        effective_batch_size,
-        config.training.lr,
+    # Optimizer (must reference DDP-wrapped model parameters)
+    optimizer = torch.optim.AdamW(
+        model.parameters(),
+        lr=training_config.lr,
+        weight_decay=training_config.weight_decay,
+        betas=training_config.betas,
     )
 
-    for epoch in range(start_epoch, config.training.max_epochs):
+    if args.resume:
+        optimizer.load_state_dict(ckpt["optimizer_state_dict"])
+
+    total_steps = training_config.max_epochs * len(dataloader)
+    min_lr_ratio = training_config.min_lr / training_config.lr
+    accum_steps = training_config.gradient_accumulation_steps
+
+    use_autocast = device.type == "cuda"
+    autocast_dtype = torch.bfloat16 if device.type == "cuda" else torch.float32
+
+    logger.info(
+        "Starting training: %d epochs, %d steps/epoch, batch=%d, accum=%d, lr=%.1e",
+        training_config.max_epochs,
+        len(dataloader),
+        effective_batch_size,
+        accum_steps,
+        training_config.lr,
+    )
+
+    for epoch in range(start_epoch, training_config.max_epochs):
+        if sampler is not None:
+            sampler.set_epoch(epoch)
+
         model.train()
         epoch_loss = 0.0
         epoch_steps = 0
+        optimizer.zero_grad()
 
-        for batch in dataloader:
-            objects = batch["objects"].to(device)
-            mask = batch["mask"].to(device)
+        for batch_idx, batch in enumerate(dataloader):
+            token_ids = batch["token_ids"].to(device)  # (B, S)
+            token_mask = batch["token_mask"].to(device)  # (B, S)
+            audio_features = batch["audio_features"].to(device)  # (B, T, D)
+            audio_mask = batch["audio_mask"].to(device)  # (B, T)
             difficulty = batch["difficulty"].to(device)
             cs = batch["cs"].to(device)
             ar = batch["ar"].to(device)
             od = batch["od"].to(device)
             hp = batch["hp"].to(device)
-            mapper_id = batch["mapper_id"].to(device)
-            year = batch["year"].to(device)
-            num_objects = batch["num_objects"].to(device)
 
-            batch_size = objects.shape[0]
+            batch_size = token_ids.shape[0]
 
-            # Extract audio features
-            if "audio_features" in batch:
-                audio_features = batch["audio_features"].to(device)
-            elif audio_encoder is not None:
-                waveform = batch["waveform"].to(device)
-                with torch.no_grad():
-                    audio_features = audio_encoder(waveform)
-            else:
-                # Random audio features as placeholder
-                audio_features = torch.randn(
-                    batch_size,
-                    64,
-                    config.model.d_model,
-                    device=device,
+            # Teacher forcing: input = tokens[:-1], target = tokens[1:]
+            input_ids = token_ids[:, :-1]
+            target_ids = token_ids[:, 1:]
+            target_mask = token_mask[:, 1:]
+
+            # Conditioning dropout for CFG
+            drop_scalars = (
+                torch.rand(batch_size, device=device) < training_config.cond_dropout
+            )
+            # Text is None during training (no text prompts in dataset)
+            # drop_text would apply if we had text
+
+            is_accum_step = (
+                (batch_idx + 1) % accum_steps != 0
+                and (batch_idx + 1) != len(dataloader)
+            )
+
+            with _maybe_no_sync(model, skip_sync=is_accum_step):
+                with torch.amp.autocast(
+                    device.type, dtype=autocast_dtype, enabled=use_autocast
+                ):
+                    logits = model(
+                        input_ids,
+                        audio_features,
+                        difficulty,
+                        cs,
+                        ar,
+                        od,
+                        hp,
+                        audio_mask=audio_mask,
+                        text_emb=None,
+                        drop_scalars=drop_scalars,
+                    )  # (B, S-1, vocab)
+
+                    # Cross-entropy loss with rhythm weighting
+                    loss_per_token = nn.functional.cross_entropy(
+                        logits.reshape(-1, logits.shape[-1]),
+                        target_ids.reshape(-1),
+                        ignore_index=tokenizer.pad_id,
+                        reduction="none",
+                    ).reshape(target_ids.shape)
+
+                    # Apply rhythm weight
+                    weights = build_rhythm_weight_mask(
+                        target_ids, tokenizer, training_config.rhythm_weight
+                    )
+
+                    masked_loss = loss_per_token * weights * target_mask
+                    loss = masked_loss.sum() / target_mask.sum().clamp(min=1)
+                    loss = loss / accum_steps
+
+                loss.backward()
+
+            if not is_accum_step:
+                torch.nn.utils.clip_grad_norm_(
+                    model.parameters(), training_config.gradient_clip_norm
                 )
 
-            # Sample flow timesteps
-            t = sample_logit_normal(
-                batch_size,
-                config.flow.logit_normal_mean,
-                config.flow.logit_normal_std,
-                device,
-            )
-
-            # Build noised input: x_t = (1-t)*noise + t*data
-            noise = torch.randn_like(objects)
-            t_expanded = t[:, None, None]  # (B, 1, 1)
-            x_t = (1.0 - t_expanded) * noise + t_expanded * objects
-
-            # Velocity target: data - noise
-            velocity_target = objects - noise
-
-            # Conditioning dropout
-            drop_mask = build_drop_mask(
-                batch_size, config.training.cond_dropout, device
-            )
-
-            # Forward
-            with torch.amp.autocast("cuda", dtype=torch.bfloat16, enabled=use_autocast):
-                velocity_pred, log_num_objects_pred = model(
-                    x_t,
-                    t,
-                    audio_features,
-                    difficulty,
-                    cs,
-                    ar,
-                    od,
-                    hp,
-                    mapper_id,
-                    year,
-                    drop_mask,
+                # LR schedule
+                lr_mult = cosine_warmup_schedule(
+                    global_step,
+                    training_config.warmup_steps,
+                    total_steps,
+                    min_lr_ratio,
                 )
+                for param_group in optimizer.param_groups:
+                    param_group["lr"] = training_config.lr * lr_mult
 
-                # Weighted MSE on velocity (masked to avoid objects)
-                diff = (velocity_pred - velocity_target) ** 2
-                weighted_diff = diff * loss_weights.unsqueeze(0).unsqueeze(0)
-                masked_diff = weighted_diff * mask.unsqueeze(-1)
-                velocity_loss = masked_diff.sum() / mask.sum().clamp(min=1)
+                optimizer.step()
+                optimizer.zero_grad()
 
-                # Object count prediction loss
-                log_num_objects_target = torch.log(num_objects.float().clamp(min=1))
-                count_loss = torch.nn.functional.l1_loss(
-                    log_num_objects_pred, log_num_objects_target
-                )
+                update_ema(ema_model, model, training_config.ema_decay)
+                global_step += 1
 
-                total_loss = velocity_loss + 0.1 * count_loss
-
-            # Backward
-            optimizer.zero_grad()
-            total_loss.backward()
-            torch.nn.utils.clip_grad_norm_(
-                model.parameters(), config.training.gradient_clip_norm
-            )
-
-            # LR schedule
-            lr_mult = cosine_warmup_schedule(
-                global_step, config.training.warmup_steps, total_steps, min_lr_ratio
-            )
-            for param_group in optimizer.param_groups:
-                param_group["lr"] = config.training.lr * lr_mult
-
-            optimizer.step()
-
-            update_ema(ema_model, model, config.training.ema_decay)
-
-            global_step += 1
-            epoch_loss += total_loss.item()
+            epoch_loss += loss.item() * accum_steps
             epoch_steps += 1
 
-            if global_step % config.training.log_every == 0:
+            if is_main and global_step % training_config.log_every == 0 and not is_accum_step:
                 avg_loss = epoch_loss / epoch_steps
                 current_lr = optimizer.param_groups[0]["lr"]
                 logger.info(
-                    "step=%d epoch=%d loss=%.4f vel_loss=%.4f count_loss=%.4f lr=%.2e",
+                    "step=%d epoch=%d loss=%.4f lr=%.2e",
                     global_step,
                     epoch,
                     avg_loss,
-                    velocity_loss.item(),
-                    count_loss.item(),
                     current_lr,
                 )
                 if wandb_run:
                     wandb_run.log(
                         {
-                            "loss": total_loss.item(),
-                            "velocity_loss": velocity_loss.item(),
-                            "count_loss": count_loss.item(),
+                            "loss": loss.item() * accum_steps,
+                            "avg_loss": avg_loss,
                             "lr": current_lr,
                             "epoch": epoch,
                         },
                         step=global_step,
                     )
 
-        # End of epoch
         avg_epoch_loss = epoch_loss / max(epoch_steps, 1)
         logger.info("Epoch %d complete. Avg loss: %.4f", epoch, avg_epoch_loss)
 
-        if (epoch + 1) % config.training.save_every_epoch == 0:
+        if is_main and (epoch + 1) % training_config.save_every_epoch == 0:
             ckpt_path = (
-                Path(config.training.checkpoint_dir)
-                / f"checkpoint_epoch_{epoch:04d}.pt"
+                Path(training_config.checkpoint_dir)
+                / f"ar_checkpoint_epoch_{epoch:04d}.pt"
             )
             save_checkpoint(
-                ckpt_path, model, ema_model, optimizer, epoch, global_step, config
+                ckpt_path,
+                model,
+                ema_model,
+                optimizer,
+                epoch,
+                global_step,
+                model_config,
+                training_config,
+                audio_encoder_state=audio_encoder_state,
             )
+            if args.keep_checkpoints > 0:
+                cleanup_old_checkpoints(
+                    Path(training_config.checkpoint_dir), args.keep_checkpoints
+                )
+
+    if distributed:
+        dist.destroy_process_group()
 
 
 if __name__ == "__main__":

@@ -1,166 +1,205 @@
 import argparse
-import math
+import logging
+import os
 
 import torch
-import torchaudio
 
-from ai_osu_maps.config import Config
-from ai_osu_maps.config import FlowConfig
-from ai_osu_maps.config import ModelConfig
-from ai_osu_maps.inference.postprocessor import vectors_to_osu
-from ai_osu_maps.inference.sampler import sample
+from ai_osu_maps.config import ARModelConfig, GenerationConfig
+from ai_osu_maps.data.osu_parser_ar import tokens_to_events
+from ai_osu_maps.data.tokenizer import Tokenizer
+from ai_osu_maps.inference.postprocessor_ar import BeatmapConfig, Postprocessor
+from ai_osu_maps.inference.sampler_ar import sample_autoregressively
+from ai_osu_maps.model.ar_transformer import ARTransformer
 from ai_osu_maps.model.audio_encoder import AudioEncoder
-from ai_osu_maps.model.flow_transformer import FlowTransformer
+
+logger = logging.getLogger(__name__)
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Generate an osu! beatmap from audio")
+    parser = argparse.ArgumentParser(
+        description="Generate osu! beatmaps from audio using autoregressive model"
+    )
     parser.add_argument("--audio_path", type=str, required=True, help="Path to audio file")
-    parser.add_argument("--output_path", type=str, default="output.osu", help="Output .osu file path")
+    parser.add_argument("--output_dir", type=str, default="output", help="Output directory")
     parser.add_argument("--checkpoint", type=str, required=True, help="Model checkpoint path")
-    parser.add_argument("--difficulty", type=float, default=5.0, help="Target star rating")
-    parser.add_argument("--cs", type=float, default=4.0, help="Circle Size")
-    parser.add_argument("--ar", type=float, default=4.0, help="Approach Rate")
-    parser.add_argument("--od", type=float, default=4.0, help="Overall Difficulty")
-    parser.add_argument("--hp", type=float, default=4.0, help="HP Drain Rate")
-    parser.add_argument("--mapper_id", type=int, default=None, help="Mapper ID for style conditioning")
-    parser.add_argument("--num_steps", type=int, default=32, help="Number of sampling steps")
-    parser.add_argument("--cfg_scale", type=float, default=2.0, help="Classifier-free guidance scale")
-    parser.add_argument("--num_objects", type=int, default=None, help="Number of hit objects (auto if not set)")
-    parser.add_argument("--device", type=str, default=None, help="Device (default: cuda if available)")
+    parser.add_argument("--prompt", type=str, default=None, help="Text prompt for style")
+    parser.add_argument("--difficulty", type=float, default=5.0, help="Star rating")
+    parser.add_argument("--cs", type=float, default=4.0, help="Circle size")
+    parser.add_argument("--ar", type=float, default=9.0, help="Approach rate")
+    parser.add_argument("--od", type=float, default=8.0, help="Overall difficulty")
+    parser.add_argument("--hp", type=float, default=5.0, help="HP drain")
+    parser.add_argument("--bpm", type=float, default=120.0, help="BPM for timing")
+    parser.add_argument("--offset", type=int, default=0, help="Timing offset in ms")
+    parser.add_argument("--temperature", type=float, default=1.0)
+    parser.add_argument("--top_k", type=int, default=0)
+    parser.add_argument("--top_p", type=float, default=0.9)
+    parser.add_argument("--cfg_scale", type=float, default=2.0)
+    parser.add_argument("--max_tokens", type=int, default=8192)
+    parser.add_argument("--device", type=str, default=None)
+    parser.add_argument("--osz", action="store_true", help="Export as .osz")
+    parser.add_argument("--stream", action="store_true", help="Stream tokens to stderr")
+    parser.add_argument("--no_ema", action="store_true", help="Use trained weights instead of EMA")
+    parser.add_argument(
+        "--audio_encoder", type=str, default=None,
+        help="Path to audio_encoder.pt (overrides checkpoint-embedded state)",
+    )
     return parser.parse_args()
 
 
+def _default_device() -> str:
+    if torch.cuda.is_available():
+        return "cuda"
+    if torch.backends.mps.is_available():
+        return "mps"
+    return "cpu"
+
+
 def load_checkpoint(
-    checkpoint_path: str, device: torch.device
-) -> tuple[FlowTransformer, AudioEncoder, ModelConfig]:
-    """Load model weights from a checkpoint file.
+    checkpoint_path: str, device: torch.device, use_ema: bool = True,
+) -> tuple[ARTransformer, ARModelConfig, dict | None]:
+    ckpt = torch.load(checkpoint_path, map_location=device, weights_only=False)
 
-    Expects a checkpoint dict with keys: model_state_dict, ema_state_dict,
-    audio_encoder_state_dict, config.
-    """
-    checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
+    model_config: ARModelConfig = ckpt["model_config"]
 
-    config: Config = checkpoint["config"]
-    model_config = config.model
+    tokenizer = Tokenizer()
+    model = ARTransformer(
+        vocab_size=tokenizer.vocab_size,
+        d_model=model_config.d_model,
+        n_heads=model_config.n_heads,
+        n_layers=model_config.n_layers,
+        dropout=0.0,  # no dropout at inference
+        max_seq_len=model_config.max_seq_len,
+        mert_dim=model_config.mert_dim,
+        text_dim=model_config.text_dim,
+        n_text_tokens=model_config.n_text_tokens,
+    ).to(device)
 
-    model = FlowTransformer(model_config)
-    # Prefer EMA weights if available
-    state_key = "ema_state_dict" if "ema_state_dict" in checkpoint else "model_state_dict"
-    model.load_state_dict(checkpoint[state_key])
-    model.to(device)
-
-    audio_encoder = AudioEncoder(d_model=model_config.d_model)
-    if "audio_encoder_state_dict" in checkpoint:
-        audio_encoder.load_state_dict(checkpoint["audio_encoder_state_dict"])
-    audio_encoder.to(device)
-
-    return model, audio_encoder, model_config
-
-
-def get_audio_duration_ms(audio_path: str) -> float:
-    """Get audio duration in milliseconds."""
-    info = torchaudio.info(audio_path)
-    return (info.num_frames / info.sample_rate) * 1000.0
-
-
-def build_conditioning(
-    args: argparse.Namespace, device: torch.device
-) -> dict[str, torch.Tensor]:
-    """Build the conditioning dict from CLI arguments."""
-    mapper_id = args.mapper_id if args.mapper_id is not None else 0
-    return {
-        "difficulty": torch.tensor([args.difficulty], device=device),
-        "cs": torch.tensor([args.cs], device=device),
-        "ar": torch.tensor([args.ar], device=device),
-        "od": torch.tensor([args.od], device=device),
-        "hp": torch.tensor([args.hp], device=device),
-        "mapper_id": torch.tensor([mapper_id], dtype=torch.long, device=device),
-        "year": torch.tensor([2024.0], device=device),
-    }
-
-
-def predict_num_objects(
-    model: FlowTransformer, audio_features: torch.Tensor
-) -> int:
-    """Predict the number of hit objects from audio features."""
-    with torch.no_grad():
-        log_count = model.object_count_predictor(audio_features)
-    return max(1, round(math.exp(log_count.item())))
-
-
-def main() -> None:
-    args = parse_args()
-
-    device = torch.device(
-        args.device if args.device is not None
-        else ("cuda" if torch.cuda.is_available() else "cpu")
-    )
-    print(f"Using device: {device}")
-
-    # Load models
-    print(f"Loading checkpoint: {args.checkpoint}")
-    model, audio_encoder, model_config = load_checkpoint(args.checkpoint, device)
-    model.eval()
-    audio_encoder.eval()
-
-    # Load and encode audio
-    print(f"Processing audio: {args.audio_path}")
-    waveform = AudioEncoder.load_audio(args.audio_path)
-    waveform = waveform.to(device)
-
-    with torch.no_grad():
-        audio_features = audio_encoder(waveform)  # (1, T_audio, d_model)
-
-    duration_ms = get_audio_duration_ms(args.audio_path)
-
-    # Determine number of objects
-    if args.num_objects is not None:
-        num_objects = args.num_objects
+    if use_ema and "ema_state_dict" in ckpt:
+        state_dict = ckpt["ema_state_dict"]
     else:
-        num_objects = predict_num_objects(model, audio_features)
-    print(f"Generating {num_objects} hit objects")
+        state_dict = ckpt["model_state_dict"]
+    model.load_state_dict(state_dict)
+    model.eval()
 
-    # Build conditioning and flow config
-    cond = build_conditioning(args, device)
-    flow_config = FlowConfig(
-        n_steps=args.num_steps,
+    audio_encoder_state = ckpt.get("audio_encoder_state_dict")
+
+    return model, model_config, audio_encoder_state
+
+
+def generate(args: argparse.Namespace) -> None:
+    device = torch.device(args.device or _default_device())
+
+    logging.basicConfig(
+        level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s"
+    )
+    logger.info("Using device: %s", device)
+
+    # Load model
+    logger.info("Loading checkpoint: %s", args.checkpoint)
+    model, model_config, audio_encoder_state = load_checkpoint(
+        args.checkpoint, device, use_ema=not args.no_ema,
+    )
+
+    # Tokenizer
+    tokenizer = Tokenizer()
+
+    # Encode audio
+    logger.info("Encoding audio: %s", args.audio_path)
+    audio_encoder = AudioEncoder(d_model=model_config.d_model).to(device)
+    if args.audio_encoder is not None:
+        state = torch.load(args.audio_encoder, map_location=device, weights_only=True)
+        audio_encoder.load_state_dict(state)
+        logger.info("Loaded audio encoder weights from %s", args.audio_encoder)
+    elif audio_encoder_state is not None:
+        audio_encoder.load_state_dict(audio_encoder_state)
+        logger.info("Loaded audio encoder weights from checkpoint")
+    else:
+        logger.warning(
+            "No audio encoder state in checkpoint - using random projection "
+            "(features will not match training data)"
+        )
+    audio_encoder.eval()
+    waveform = AudioEncoder.load_audio(args.audio_path).to(device)
+    with torch.no_grad():
+        audio_features = audio_encoder(waveform)  # (1, T, d_model)
+    audio_mask = torch.ones(
+        1, audio_features.shape[1], dtype=torch.bool, device=device
+    )
+
+    # Encode text prompt
+    text_emb = None
+    if args.prompt:
+        logger.info("Encoding text prompt: %s", args.prompt)
+        from ai_osu_maps.model.text_encoder import TextEncoder
+
+        text_enc = TextEncoder(d_model=model_config.d_model).to(device)
+        text_emb = text_enc.encode_text([args.prompt]).to(device)
+
+    # Conditioning
+    difficulty = torch.tensor([args.difficulty], dtype=torch.float32, device=device)
+    cs_val = torch.tensor([args.cs], dtype=torch.float32, device=device)
+    ar_val = torch.tensor([args.ar], dtype=torch.float32, device=device)
+    od_val = torch.tensor([args.od], dtype=torch.float32, device=device)
+    hp_val = torch.tensor([args.hp], dtype=torch.float32, device=device)
+
+    # Generation config
+    gen_config = GenerationConfig(
+        temperature=args.temperature,
+        top_k=args.top_k,
+        top_p=args.top_p,
         cfg_scale=args.cfg_scale,
+        max_tokens=args.max_tokens,
     )
 
-    # Sample
-    print(f"Sampling with {flow_config.n_steps} steps, CFG scale {flow_config.cfg_scale}")
-    vectors = sample(
-        model=model,
-        audio_features=audio_features,
-        num_objects=num_objects,
-        cond=cond,
-        config=flow_config,
+    # Generate
+    logger.info("Generating beatmap...")
+    token_ids = sample_autoregressively(
+        model, tokenizer, audio_features,
+        difficulty, cs_val, ar_val, od_val, hp_val,
+        gen_config,
+        audio_mask=audio_mask,
+        text_emb=text_emb,
         device=device,
+        stream=args.stream,
+    )
+    logger.info("Generated %d tokens", len(token_ids))
+
+    # Convert tokens to events
+    events = tokens_to_events(token_ids, tokenizer)
+    logger.info("Decoded %d events", len(events))
+
+    # Post-process to .osu
+    postprocessor = Postprocessor(bpm=args.bpm, offset=args.offset)
+
+    # Try to generate timing from events first
+    timing = postprocessor.generate_timing(events)
+
+    audio_filename = os.path.basename(args.audio_path)
+    beatmap_config = BeatmapConfig(
+        audio_filename=audio_filename,
+        title="Generated Beatmap",
+        title_unicode="Generated Beatmap",
+        artist="AI",
+        artist_unicode="AI",
+        creator="osumaps-ar",
+        version=f"AR {args.difficulty:.1f}*",
+        hp_drain_rate=args.hp,
+        circle_size=args.cs,
+        overall_difficulty=args.od,
+        approach_rate=args.ar,
+        bpm=args.bpm,
+        offset=args.offset,
     )
 
-    # Convert to .osu file
-    vectors_np = vectors.squeeze(0).cpu().numpy()
-    osu_content = vectors_to_osu(
-        vectors_np,
-        audio_path=args.audio_path,
-        duration_ms=duration_ms,
-        difficulty=args.difficulty,
-        cs=args.cs,
-        ar=args.ar,
-        od=args.od,
-        hp=args.hp,
-    )
+    result = postprocessor.generate(events, beatmap_config, timing or None)
 
-    # Write output
-    with open(args.output_path, "w") as f:
-        f.write(osu_content)
+    osu_path = postprocessor.write_result(result, args.output_dir)
+    logger.info("Wrote .osu file: %s", osu_path)
 
-    print(f"Wrote {args.output_path}")
-    print(f"  Objects: {num_objects}")
-    print(f"  Duration: {duration_ms / 1000:.1f}s")
-    print(f"  Difficulty: {args.difficulty}*")
+    if args.osz:
+        osz_path = postprocessor.export_osz(osu_path, args.audio_path, args.output_dir)
+        logger.info("Wrote .osz file: %s", osz_path)
 
 
 if __name__ == "__main__":
-    main()
+    generate(parse_args())
