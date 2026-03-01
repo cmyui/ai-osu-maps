@@ -56,9 +56,15 @@ def parse_args() -> argparse.Namespace:
         "--device", type=str, default=None, help="Torch device for audio encoding"
     )
 
-    # Both precompute stages
+    # Precompute stages
     parser.add_argument(
-        "--force", action="store_true", help="Recompute cached features/tokens"
+        "--force", action="store_true", help="Recompute all cached features and tokens"
+    )
+    parser.add_argument(
+        "--force-audio", action="store_true", help="Recompute cached audio features only"
+    )
+    parser.add_argument(
+        "--force-tokens", action="store_true", help="Recompute cached beatmap tokens only"
     )
 
     return parser.parse_args()
@@ -89,11 +95,13 @@ def main() -> None:
 
     logger.info("=== Stage 2/3: Precomputing audio features + beatmap tokens ===")
     with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+        force_audio = args.force or args.force_audio
+        force_tokens = args.force or args.force_tokens
         audio_future = executor.submit(
-            precompute_audio.run, args.dataset_dir, device=args.device, force=args.force
+            precompute_audio.run, args.dataset_dir, device=args.device, force=force_audio
         )
         tokens_future = executor.submit(
-            precompute_tokens.run, args.dataset_dir, force=args.force
+            precompute_tokens.run, args.dataset_dir, force=force_tokens
         )
         audio_future.result()
         tokens_future.result()
