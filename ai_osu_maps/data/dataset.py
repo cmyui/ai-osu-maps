@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import bisect
 import logging
+import random
 from pathlib import Path
 
 import torch
@@ -13,11 +15,18 @@ logger = logging.getLogger(__name__)
 AUDIO_FEATURES_FILENAME = "audio_features.pt"
 BEATMAP_TOKENS_FILENAME = "beatmap_tokens.pt"
 
+MERT_FRAME_RATE_HZ = 75
+
 
 class BeatmapDataset(Dataset):
     """Dataset for autoregressive beatmap generation.
 
     Loads pre-computed audio features and pre-tokenized beatmaps.
+
+    When ``window_sec`` is set, each sample is a random time window of that
+    duration (in seconds). Both the token sequence and the audio features are
+    sliced to the window, giving the model aligned local context instead of
+    full-song cross-attention.
 
     Expects directory structure:
         dataset_dir/
@@ -36,9 +45,11 @@ class BeatmapDataset(Dataset):
         tokenizer: Tokenizer,
         max_seq_len: int = 2048,
         max_maps: int | None = None,
+        window_sec: float | None = None,
     ) -> None:
         self.tokenizer = tokenizer
         self.max_seq_len = max_seq_len
+        self.window_sec = window_sec
 
         self.samples: list[tuple[Path, int]] = []  # (song_dir, beatmap_index)
         dataset_path = Path(dataset_dir)
@@ -82,7 +93,7 @@ class BeatmapDataset(Dataset):
 
         audio_features = torch.load(
             song_dir / AUDIO_FEATURES_FILENAME, weights_only=True,
-        )  # (T, d_model)
+        )  # (T_audio, d_model)
 
         beatmaps = torch.load(
             song_dir / BEATMAP_TOKENS_FILENAME, weights_only=False,
@@ -90,9 +101,23 @@ class BeatmapDataset(Dataset):
         bm = beatmaps[beatmap_idx]
 
         token_ids = bm["token_ids"]
-        if len(token_ids) > self.max_seq_len:
-            token_ids = token_ids[: self.max_seq_len]
-        token_ids = torch.tensor(token_ids, dtype=torch.long)
+        token_times_ms: list[int] | None = bm.get("token_times_ms")
+
+        if self.window_sec is not None and token_times_ms is not None:
+            token_ids, audio_features = _window_sample(
+                token_ids,
+                token_times_ms,
+                audio_features,
+                self.window_sec,
+                self.max_seq_len,
+                self.tokenizer,
+            )
+        else:
+            if len(token_ids) > self.max_seq_len:
+                token_ids = token_ids[: self.max_seq_len]
+            token_ids = torch.tensor(token_ids, dtype=torch.long)
+
+        num_objects = bm.get("num_objects", 0)
 
         return {
             "audio_features": audio_features,
@@ -104,8 +129,58 @@ class BeatmapDataset(Dataset):
             "hp": torch.tensor(bm["hp"], dtype=torch.float32),
             "mapper_id": torch.tensor(bm.get("mapper_id", 0), dtype=torch.long),
             "year": torch.tensor(bm.get("year", 0.0), dtype=torch.float32),
-            "num_objects": torch.tensor(bm.get("num_objects", 0), dtype=torch.float32),
+            "num_objects": torch.tensor(num_objects, dtype=torch.float32),
         }
+
+
+def _window_sample(
+    token_ids: list[int],
+    token_times_ms: list[int],
+    audio_features: torch.Tensor,
+    window_sec: float,
+    max_seq_len: int,
+    tokenizer: Tokenizer,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Sample a random time window and slice tokens + audio to match.
+
+    Returns:
+        token_ids: (S,) long tensor with SOS prepended.
+        audio_features: (T_window, d_model) sliced audio.
+    """
+    window_ms = int(window_sec * 1000)
+    song_duration_ms = max(token_times_ms[-1], 1)
+
+    # Pick a random window start (can start at 0)
+    max_start = max(song_duration_ms - window_ms, 0)
+    window_start_ms = random.randint(0, max_start) if max_start > 0 else 0
+    window_end_ms = window_start_ms + window_ms
+
+    # Find token range within this window using bisect
+    tok_start = bisect.bisect_left(token_times_ms, window_start_ms)
+    tok_end = bisect.bisect_right(token_times_ms, window_end_ms)
+
+    # Slice tokens (exclude SOS/EOS from the original, we'll re-add SOS)
+    windowed_tokens = token_ids[tok_start:tok_end]
+    if len(windowed_tokens) > max_seq_len - 1:  # leave room for SOS
+        windowed_tokens = windowed_tokens[: max_seq_len - 1]
+
+    # Prepend SOS
+    windowed_tokens = [tokenizer.sos_id] + windowed_tokens
+    token_tensor = torch.tensor(windowed_tokens, dtype=torch.long)
+
+    # Slice audio features to match the time window
+    audio_start_frame = int(window_start_ms / 1000 * MERT_FRAME_RATE_HZ)
+    audio_end_frame = int(window_end_ms / 1000 * MERT_FRAME_RATE_HZ)
+    audio_start_frame = min(audio_start_frame, audio_features.shape[0])
+    audio_end_frame = min(audio_end_frame, audio_features.shape[0])
+
+    windowed_audio = audio_features[audio_start_frame:audio_end_frame]
+
+    # Ensure at least 1 audio frame
+    if windowed_audio.shape[0] == 0:
+        windowed_audio = audio_features[:1]
+
+    return token_tensor, windowed_audio
 
 
 def collate_fn(batch: list[dict[str, torch.Tensor]]) -> dict[str, torch.Tensor]:

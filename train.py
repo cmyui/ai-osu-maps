@@ -79,6 +79,11 @@ def parse_args() -> argparse.Namespace:
         "--keep_checkpoints", type=int, default=0,
         help="Number of most recent checkpoints to keep (0 = keep all)",
     )
+    parser.add_argument(
+        "--window_sec", type=float, default=None,
+        help="Train on random time windows of this duration (seconds). "
+        "Slices both tokens and audio features to the window.",
+    )
     return parser.parse_args()
 
 
@@ -172,16 +177,15 @@ def build_token_weight_mask(
     def _range(event_type: EventType) -> tuple[int, int]:
         return tokenizer.event_type_range(event_type)
 
-    # Rhythm/timing tokens
-    ts_start, ts_end = _range(EventType.TIME_SHIFT)
+    # Rhythm/timing tokens (excludes TIME_SHIFT — its frequency is high enough
+    # that upweighting it causes the model to over-predict it)
     snap_start, snap_end = _range(EventType.SNAPPING)
     beat_start, beat_end = _range(EventType.BEAT)
     measure_start, measure_end = _range(EventType.MEASURE)
     tp_start, tp_end = _range(EventType.TIMING_POINT)
 
     is_rhythm = (
-        ((token_ids >= ts_start) & (token_ids <= ts_end))
-        | ((token_ids >= snap_start) & (token_ids <= snap_end))
+        ((token_ids >= snap_start) & (token_ids <= snap_end))
         | ((token_ids >= beat_start) & (token_ids <= beat_end))
         | ((token_ids >= measure_start) & (token_ids <= measure_end))
         | ((token_ids >= tp_start) & (token_ids <= tp_end))
@@ -292,6 +296,7 @@ def train(args: argparse.Namespace) -> None:
         tokenizer,
         max_seq_len=model_config.max_seq_len,
         max_maps=args.max_maps,
+        window_sec=args.window_sec,
     )
     logger.info("Dataset: %d beatmaps", len(dataset))
     if len(dataset) == 0:

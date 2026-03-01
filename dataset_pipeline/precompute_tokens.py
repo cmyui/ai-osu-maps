@@ -18,9 +18,29 @@ from slider import Beatmap
 
 from ai_osu_maps.data.event import EventType
 from ai_osu_maps.data.osu_parser import events_to_tokens, parse_beatmap
-from ai_osu_maps.data.tokenizer import Tokenizer
+from ai_osu_maps.data.tokenizer import MILLISECONDS_PER_STEP, Tokenizer
 
 OBJECT_EVENT_TYPES = frozenset({EventType.CIRCLE, EventType.SLIDER_HEAD, EventType.SPINNER})
+
+
+def _compute_token_times_ms(token_ids: list[int], tokenizer: Tokenizer) -> list[int]:
+    """Compute cumulative time in ms for each token in the sequence.
+
+    SOS and EOS get the current time at their position. Non-TIME_SHIFT
+    tokens inherit the time of the most recent TIME_SHIFT.
+    """
+    ts_start = tokenizer.event_start[EventType.TIME_SHIFT]
+    ts_er = tokenizer.event_range[EventType.TIME_SHIFT]
+    ts_count = ts_er.max_value - ts_er.min_value + 1
+
+    cumulative_ms = 0
+    times: list[int] = []
+    for tid in token_ids:
+        if ts_start <= tid < ts_start + ts_count:
+            delta_steps = ts_er.min_value + (tid - ts_start)
+            cumulative_ms += delta_steps * MILLISECONDS_PER_STEP
+        times.append(cumulative_ms)
+    return times
 
 logger = logging.getLogger(__name__)
 
@@ -60,11 +80,13 @@ def _process_song_dir(
             if len(events) == 0:
                 continue
             token_ids = events_to_tokens(events, tokenizer)
+            token_times_ms = _compute_token_times_ms(token_ids, tokenizer)
             num_objects = sum(1 for e in events if e.type in OBJECT_EVENT_TYPES)
             mapper_id = hash(beatmap.creator) % 4096 if beatmap.creator else 0
             beatmaps.append(
                 {
                     "token_ids": token_ids,
+                    "token_times_ms": token_times_ms,
                     "difficulty": getattr(beatmap, "star_rating", None) or 5.0,
                     "cs": float(beatmap.circle_size),
                     "ar": float(beatmap.approach_rate),

@@ -39,9 +39,11 @@ class TrainingConfig:
 
 @dataclass
 class GenerationConfig:
-    temperature: float = 1.0
+    temperature: float = 0.9
+    timing_temperature: float = 0.1
     top_k: int = 0
-    top_p: float = 0.9
+    top_p: float = 0.95
     cfg_scale: float = 2.0
     max_tokens: int = 8192
     lookback_tokens: int = 512
+    monotonic_time: bool = True

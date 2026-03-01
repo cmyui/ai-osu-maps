@@ -30,11 +30,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--hp", type=float, default=5.0, help="HP drain")
     parser.add_argument("--bpm", type=float, default=120.0, help="BPM for timing")
     parser.add_argument("--offset", type=int, default=0, help="Timing offset in ms")
-    parser.add_argument("--temperature", type=float, default=1.0)
+    parser.add_argument("--temperature", type=float, default=0.9)
+    parser.add_argument("--timing_temperature", type=float, default=0.1, help="Temperature for timing tokens")
     parser.add_argument("--top_k", type=int, default=0)
-    parser.add_argument("--top_p", type=float, default=0.9)
+    parser.add_argument("--top_p", type=float, default=0.95)
     parser.add_argument("--cfg_scale", type=float, default=2.0)
     parser.add_argument("--max_tokens", type=int, default=8192)
+    parser.add_argument("--no_monotonic_time", action="store_true", help="Disable monotonic time constraint")
     parser.add_argument("--device", type=str, default=None)
     parser.add_argument("--osz", action="store_true", help="Export as .osz")
     parser.add_argument("--stream", action="store_true", help="Stream tokens to stderr")
@@ -150,10 +152,12 @@ def generate(args: argparse.Namespace) -> None:
     # Generation config
     gen_config = GenerationConfig(
         temperature=args.temperature,
+        timing_temperature=args.timing_temperature,
         top_k=args.top_k,
         top_p=args.top_p,
         cfg_scale=args.cfg_scale,
         max_tokens=args.max_tokens,
+        monotonic_time=not args.no_monotonic_time,
     )
 
     # Generate

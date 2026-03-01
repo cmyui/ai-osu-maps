@@ -85,10 +85,12 @@ torchrun --nproc_per_node=2 train.py \
 - Supports multi-GPU training via `torchrun` (DDP with NCCL backend)
 - When using `torchrun`, `--device` is ignored; each process uses its assigned GPU
 - Loads pre-cached audio features + parses .osu files at startup
-- Teacher forcing with cross-entropy loss and rhythm token weighting (3x)
+- Teacher forcing with cross-entropy loss and token weighting (rhythm 3x, objects 2x, position 1.5x; TIME_SHIFT at 1x)
+- Auxiliary object count predictor head (log-space L1 loss, weight 0.1)
 - Cosine warmup LR schedule, AdamW optimizer, gradient accumulation (4 steps)
 - EMA weights with 0.9999 decay
 - Checkpoints saved every epoch to `checkpoints/`
+- `--window_sec N`: Train on random N-second time windows (slices both tokens and audio). Requires `token_times_ms` in cache (re-run `precompute_tokens` with `--force`).
 - `--max_maps N`: Limit number of song directories (useful for quick experiments)
 - `--resume path/to/checkpoint.pt`: Resume from a checkpoint
 - `--wandb_project name`: Enable wandb logging
@@ -103,7 +105,7 @@ python inference.py \
   --difficulty 5.5 \
   --cs 4.0 --ar 9.3 --od 8.5 --hp 6.0 \
   --bpm 174.0 \
-  --temperature 1.0 --top_p 0.9 \
+  --temperature 0.9 --timing_temperature 0.1 --top_p 0.95 \
   --max_tokens 8192 \
   --osz \
   --stream \
@@ -114,6 +116,11 @@ python inference.py \
 - `--stream`: Print each token to stderr as it's generated
 - `--prompt "style text"`: Optional text conditioning
 - `--cfg_scale 2.0`: Classifier-free guidance scale (only applies with text prompt)
+- `--temperature 0.9`: Base sampling temperature for most tokens
+- `--timing_temperature 0.1`: Near-greedy temperature for structural timing tokens (BEAT, MEASURE, TIMING_POINT). TIME_SHIFT/SNAPPING use the midpoint.
+- `--no_monotonic_time`: Disable monotonic time constraint (by default, backward time jumps are masked)
+- `--mapper N`: Mapper ID for style conditioning (0 = unknown)
+- `--year N`: Year condition (0.0 = unknown)
 - `--audio_encoder path/to/audio_encoder.pt`: Override audio encoder weights (for old checkpoints without embedded state)
 - `--no_ema`: Use trained weights instead of EMA weights
 - Generation takes ~40 min on MPS for 8192 tokens; much faster on CUDA
