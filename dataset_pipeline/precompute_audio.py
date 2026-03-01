@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 
 AUDIO_EXTENSIONS = {".mp3", ".wav", ".ogg", ".flac"}
 CACHE_FILENAME = "audio_features.pt"
-PREFETCH_BUFFER_SIZE = 4
+DEFAULT_BATCH_SIZE = 8
 
 
 def find_audio_file(song_dir: Path) -> Path | None:
@@ -45,7 +45,7 @@ def _prefetch_audio(
     prefetch_queue.put(None)
 
 
-def run(dataset_dir: str, *, device: str | None = None, force: bool = False) -> None:
+def run(dataset_dir: str, *, device: str | None = None, force: bool = False, batch_size: int = DEFAULT_BATCH_SIZE) -> None:
     """Pre-compute MERT audio features for all songs in the dataset."""
     torch_device = torch.device(
         device if device else ("cuda" if torch.cuda.is_available() else "cpu")
@@ -100,7 +100,7 @@ def run(dataset_dir: str, *, device: str | None = None, force: bool = False) -> 
     # Prefetch audio loading in background thread so GPU doesn't idle
     prefetch_queue: queue.Queue[
         tuple[Path, Path, torch.Tensor | None, BaseException | None] | None
-    ] = queue.Queue(maxsize=PREFETCH_BUFFER_SIZE)
+    ] = queue.Queue(maxsize=batch_size)
     prefetch_thread = threading.Thread(
         target=_prefetch_audio, args=(work_items, prefetch_queue), daemon=True
     )
@@ -108,30 +108,48 @@ def run(dataset_dir: str, *, device: str | None = None, force: bool = False) -> 
 
     done = 0
     failed = 0
+    finished = False
 
-    while True:
-        item = prefetch_queue.get()
-        if item is None:
-            break
+    while not finished:
+        # Collect a batch of songs from the prefetch queue
+        batch: list[tuple[Path, Path, torch.Tensor]] = []
 
-        song_dir, cache_path, waveform, load_exc = item
-
-        if load_exc is not None:
-            logger.error("Failed to load %s", song_dir, exc_info=load_exc)
-            failed += 1
-        else:
+        while len(batch) < batch_size:
             try:
-                assert waveform is not None
-                waveform = waveform.to(torch_device)
-                with torch.no_grad():
-                    features = encoder(waveform)  # (1, max_frames, d_model)
-                torch.save(features.squeeze(0).cpu(), cache_path)  # (max_frames, d_model)
-                done += 1
-            except Exception:
-                logger.exception("Failed to process %s", song_dir)
-                failed += 1
+                item = prefetch_queue.get(block=len(batch) == 0)
+            except queue.Empty:
+                break
 
-        if (done + failed) % 50 == 0:
+            if item is None:
+                finished = True
+                break
+
+            song_dir, cache_path, waveform, load_exc = item
+            if load_exc is not None:
+                logger.error("Failed to load %s", song_dir, exc_info=load_exc)
+                failed += 1
+                continue
+
+            assert waveform is not None
+            batch.append((song_dir, cache_path, waveform))
+
+        if not batch:
+            continue
+
+        try:
+            waveforms_gpu = [w.squeeze(0).to(torch_device) for _, _, w in batch]
+            features_list = encoder.encode_batch(waveforms_gpu)
+
+            for (_, cache_path, _), features in zip(batch, features_list):
+                torch.save(features.cpu(), cache_path)
+            done += len(batch)
+        except Exception:
+            logger.exception(
+                "Failed to process batch of %d songs", len(batch)
+            )
+            failed += len(batch)
+
+        if done % 50 < len(batch):
             logger.info(
                 "Progress: %d/%d done, %d failed",
                 done,
@@ -152,9 +170,10 @@ def run(dataset_dir: str, *, device: str | None = None, force: bool = False) -> 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Pre-compute MERT audio features")
-    parser.add_argument("--dataset_dir", type=str, required=True)
+    parser.add_argument("--dataset-dir", type=str, required=True)
     parser.add_argument("--device", type=str, default=None)
     parser.add_argument("--force", action="store_true", help="Recompute even if cached")
+    parser.add_argument("--batch-size", type=int, default=DEFAULT_BATCH_SIZE, help="Songs per encoding batch")
     return parser.parse_args()
 
 
@@ -164,4 +183,4 @@ if __name__ == "__main__":
     )
 
     args = parse_args()
-    run(args.dataset_dir, device=args.device, force=args.force)
+    run(args.dataset_dir, device=args.device, force=args.force, batch_size=args.batch_size)

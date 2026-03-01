@@ -31,12 +31,12 @@ def parse_args() -> argparse.Namespace:
     )
 
     parser.add_argument(
-        "--dataset_dir", type=str, required=True, help="Dataset directory"
+        "--dataset-dir", type=str, required=True, help="Dataset directory"
     )
 
     # Download stage
     parser.add_argument(
-        "--set_ids_file",
+        "--set-ids-file",
         type=str,
         default=None,
         help="TSV file with beatmapset_id in first column (skips S3/Cheesegull)",
@@ -45,26 +45,35 @@ def parse_args() -> argparse.Namespace:
         "--limit", type=int, default=100, help="Max beatmap sets to download"
     )
     parser.add_argument(
-        "--chunk_size", type=int, default=200, help="Download chunk size"
+        "--chunk-size", type=int, default=200, help="Download chunk size"
     )
     parser.add_argument(
-        "--dry_run", action="store_true", help="List downloads without fetching"
+        "--dry-run", action="store_true", help="List downloads without fetching"
     )
 
     # Audio precompute stage
     parser.add_argument(
         "--device", type=str, default=None, help="Torch device for audio encoding"
     )
+    parser.add_argument(
+        "--audio-batch-size", type=int, default=8, help="Songs per audio encoding batch"
+    )
+    parser.add_argument(
+        "--force-audio",
+        action="store_true",
+        help="Recompute cached audio features only",
+    )
 
-    # Precompute stages
+    # Token precompute stage
+    parser.add_argument(
+        "--force-tokens",
+        action="store_true",
+        help="Recompute cached beatmap tokens only",
+    )
+
+    # All precompute stages
     parser.add_argument(
         "--force", action="store_true", help="Recompute all cached features and tokens"
-    )
-    parser.add_argument(
-        "--force-audio", action="store_true", help="Recompute cached audio features only"
-    )
-    parser.add_argument(
-        "--force-tokens", action="store_true", help="Recompute cached beatmap tokens only"
     )
 
     return parser.parse_args()
@@ -98,7 +107,11 @@ def main() -> None:
         force_audio = args.force or args.force_audio
         force_tokens = args.force or args.force_tokens
         audio_future = executor.submit(
-            precompute_audio.run, args.dataset_dir, device=args.device, force=force_audio
+            precompute_audio.run,
+            args.dataset_dir,
+            device=args.device,
+            force=force_audio,
+            batch_size=args.audio_batch_size,
         )
         tokens_future = executor.submit(
             precompute_tokens.run, args.dataset_dir, force=force_tokens

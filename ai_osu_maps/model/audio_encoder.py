@@ -46,6 +46,47 @@ class AudioEncoder(nn.Module):
         weights = F.softmax(self.layer_weights, dim=0)
         return torch.einsum("l,lbth->bth", weights, hidden_states)
 
+    def _split_into_chunks(self, waveform_1d: torch.Tensor) -> list[torch.Tensor]:
+        """Split a 1D waveform into MERT-sized chunks.
+
+        Returns at least one chunk. Skips very short tails (<1s).
+        """
+        if waveform_1d.shape[0] < MERT_SAMPLE_RATE:
+            waveform_1d = F.pad(
+                waveform_1d, (0, MERT_SAMPLE_RATE - waveform_1d.shape[0])
+            )
+
+        T_samples = waveform_1d.shape[0]
+        chunks = []
+        for start in range(0, T_samples, MERT_CHUNK_SAMPLES):
+            end = min(start + MERT_CHUNK_SAMPLES, T_samples)
+            if end - start < MERT_SAMPLE_RATE:
+                break
+            chunks.append(waveform_1d[start:end])
+
+        if not chunks:
+            chunks.append(waveform_1d)
+
+        return chunks
+
+    def _pool_to_fixed_length(self, features: torch.Tensor) -> torch.Tensor:
+        """Pool variable-length frame features to max_frames via mean pooling.
+
+        Args:
+            features: (T_frames, d_model)
+
+        Returns:
+            (min(T_frames, max_frames), d_model)
+        """
+        T = features.shape[0]
+        if T <= self.max_frames:
+            return features
+        indices = torch.linspace(0, T, self.max_frames + 1, dtype=torch.long)
+        pooled = []
+        for i in range(self.max_frames):
+            pooled.append(features[indices[i]:indices[i + 1]].mean(dim=0))
+        return torch.stack(pooled, dim=0)
+
     def _encode_single(self, waveform_1d: torch.Tensor) -> torch.Tensor:
         """Encode a single waveform (no batch dim) through chunked MERT.
 
@@ -55,41 +96,70 @@ class AudioEncoder(nn.Module):
         Returns:
             (max_frames, d_model)
         """
-        # MERT's conv layers require a minimum input length
-        if waveform_1d.shape[0] < MERT_SAMPLE_RATE:
-            waveform_1d = F.pad(
-                waveform_1d, (0, MERT_SAMPLE_RATE - waveform_1d.shape[0])
-            )
+        chunks = self._split_into_chunks(waveform_1d)
 
-        T_samples = waveform_1d.shape[0]
-        wav = waveform_1d.unsqueeze(0)  # (1, T)
-
-        # Process in chunks to bound MERT internal memory
         chunk_outputs = []
-        for start in range(0, T_samples, MERT_CHUNK_SAMPLES):
-            end = min(start + MERT_CHUNK_SAMPLES, T_samples)
-            if end - start < MERT_SAMPLE_RATE:
-                break  # skip very short tail (<1s)
-            chunk_outputs.append(self._encode_chunk(wav[:, start:end]))
-
-        if not chunk_outputs:
-            chunk_outputs.append(self._encode_chunk(wav))
+        for chunk in chunks:
+            chunk_outputs.append(self._encode_chunk(chunk.unsqueeze(0)))
 
         weighted = torch.cat(chunk_outputs, dim=1)  # (1, T_frames, H)
-        projected = self.projection(weighted)  # (1, T_frames, d_model)
+        projected = self.projection(weighted.squeeze(0))  # (T_frames, d_model)
+        return self._pool_to_fixed_length(projected)
 
-        # Pool to fixed length
-        T = projected.shape[1]
-        if T > self.max_frames:
-            indices = torch.linspace(0, T, self.max_frames + 1, dtype=torch.long)
-            pooled = []
-            for i in range(self.max_frames):
-                pooled.append(projected[0, indices[i]:indices[i + 1]].mean(dim=0))
-            projected = torch.stack(pooled, dim=0)  # (max_frames, d_model)
-        else:
-            projected = projected.squeeze(0)  # (T_frames, d_model)
+    def encode_batch(
+        self, waveforms: list[torch.Tensor], *, chunk_batch_size: int = 8
+    ) -> list[torch.Tensor]:
+        """Encode multiple waveforms with batched MERT chunk processing.
 
-        return projected
+        Groups same-length chunks across songs into batched forward passes
+        for better GPU utilization than processing songs one at a time.
+
+        Args:
+            waveforms: List of 1D waveforms (T_samples,) at 24kHz, on model device
+            chunk_batch_size: Max MERT chunks per forward pass
+
+        Returns:
+            List of (T_frames, d_model) tensors, one per input waveform
+        """
+        with torch.no_grad():
+            # Split all songs into chunks
+            songs_chunks = [self._split_into_chunks(w) for w in waveforms]
+
+            # Separate full-length (batchable) and partial chunks
+            full_chunks: list[tuple[int, int, torch.Tensor]] = []
+            partial_chunks: list[tuple[int, int, torch.Tensor]] = []
+
+            for song_idx, chunks in enumerate(songs_chunks):
+                for chunk_idx, chunk in enumerate(chunks):
+                    if chunk.shape[0] == MERT_CHUNK_SAMPLES:
+                        full_chunks.append((song_idx, chunk_idx, chunk))
+                    else:
+                        partial_chunks.append((song_idx, chunk_idx, chunk))
+
+            # Encode full-length chunks in batches (all same size, no padding waste)
+            encoded: dict[tuple[int, int], torch.Tensor] = {}
+
+            for i in range(0, len(full_chunks), chunk_batch_size):
+                batch = full_chunks[i : i + chunk_batch_size]
+                stacked = torch.stack([c for _, _, c in batch])
+                weighted = self._encode_chunk(stacked)  # (B, T_frames, H)
+                for j, (song_idx, chunk_idx, _) in enumerate(batch):
+                    encoded[(song_idx, chunk_idx)] = weighted[j]
+
+            # Encode partial chunks individually
+            for song_idx, chunk_idx, chunk in partial_chunks:
+                weighted = self._encode_chunk(chunk.unsqueeze(0))  # (1, T_frames, H)
+                encoded[(song_idx, chunk_idx)] = weighted[0]
+
+            # Reassemble per song: concatenate chunks, project, pool
+            results = []
+            for song_idx, chunks in enumerate(songs_chunks):
+                frames = [encoded[(song_idx, i)] for i in range(len(chunks))]
+                weighted = torch.cat(frames, dim=0)  # (total_frames, H)
+                projected = self.projection(weighted)  # (total_frames, d_model)
+                results.append(self._pool_to_fixed_length(projected))
+
+            return results
 
     def forward(self, waveform: torch.Tensor) -> torch.Tensor:
         """Encode audio waveforms into fixed-length frame features.

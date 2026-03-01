@@ -527,14 +527,14 @@ async def run(
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Download beatmap sets for training")
-    parser.add_argument("--dataset_dir", type=str, default="dataset")
+    parser.add_argument("--dataset-dir", type=str, default="dataset")
     parser.add_argument(
         "--limit", type=int, default=100, help="Max beatmap sets to download"
     )
-    parser.add_argument("--dry_run", action="store_true")
-    parser.add_argument("--chunk_size", type=int, default=CHUNK_SIZE)
+    parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--chunk-size", type=int, default=CHUNK_SIZE)
     parser.add_argument(
-        "--set_ids_file",
+        "--set-ids-file",
         type=str,
         default=None,
         help="TSV file with beatmapset_id in first column (skips S3/Cheesegull)",

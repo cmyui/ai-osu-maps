@@ -150,7 +150,7 @@ def run(dataset_dir: str, *, force: bool = False) -> None:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Pre-compute tokenized beatmaps")
-    parser.add_argument("--dataset_dir", type=str, required=True)
+    parser.add_argument("--dataset-dir", type=str, required=True)
     parser.add_argument("--force", action="store_true", help="Recompute even if cached")
     return parser.parse_args()
 
