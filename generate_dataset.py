@@ -18,7 +18,6 @@ Usage:
 
 import argparse
 import asyncio
-import concurrent.futures
 import logging
 
 from dataset_pipeline import download, precompute_audio, precompute_tokens
@@ -67,7 +66,9 @@ def parse_args() -> argparse.Namespace:
 
     # Token precompute stage
     parser.add_argument(
-        "--token-workers", type=int, default=precompute_tokens.DEFAULT_MAX_WORKERS,
+        "--token-workers",
+        type=int,
+        default=precompute_tokens.DEFAULT_MAX_WORKERS,
         help="Max worker processes for token precomputation",
     )
     parser.add_argument(
@@ -77,9 +78,15 @@ def parse_args() -> argparse.Namespace:
     )
 
     # Skip stages
-    parser.add_argument("--skip-download", action="store_true", help="Skip download stage")
-    parser.add_argument("--skip-audio", action="store_true", help="Skip audio precompute stage")
-    parser.add_argument("--skip-tokens", action="store_true", help="Skip token precompute stage")
+    parser.add_argument(
+        "--skip-download", action="store_true", help="Skip download stage"
+    )
+    parser.add_argument(
+        "--skip-audio", action="store_true", help="Skip audio precompute stage"
+    )
+    parser.add_argument(
+        "--skip-tokens", action="store_true", help="Skip token precompute stage"
+    )
 
     # All precompute stages
     parser.add_argument(
@@ -112,31 +119,24 @@ def main() -> None:
             logger.info("Dry run complete, skipping precompute stages")
             return
 
-    run_audio = not args.skip_audio
-    run_tokens = not args.skip_tokens
-
-    if run_audio or run_tokens:
-        logger.info("=== Stage 2/3: Precomputing audio features + beatmap tokens ===")
+    if not args.skip_audio:
         force_audio = args.force or args.force_audio
-        force_tokens = args.force or args.force_tokens
+        logger.info("=== Stage 2/3: Precomputing audio features ===")
+        precompute_audio.run(
+            args.dataset_dir,
+            device=args.device,
+            force=force_audio,
+            batch_size=args.audio_batch_size,
+        )
 
-        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
-            futures = []
-            if run_audio:
-                futures.append(executor.submit(
-                    precompute_audio.run,
-                    args.dataset_dir,
-                    device=args.device,
-                    force=force_audio,
-                    batch_size=args.audio_batch_size,
-                ))
-            if run_tokens:
-                futures.append(executor.submit(
-                    precompute_tokens.run, args.dataset_dir, force=force_tokens,
-                    max_workers=args.token_workers,
-                ))
-            for f in futures:
-                f.result()
+    if not args.skip_tokens:
+        force_tokens = args.force or args.force_tokens
+        logger.info("=== Stage 3/3: Precomputing beatmap tokens ===")
+        precompute_tokens.run(
+            args.dataset_dir,
+            force=force_tokens,
+            max_workers=args.token_workers,
+        )
 
     logger.info("=== Dataset generation complete ===")
 
