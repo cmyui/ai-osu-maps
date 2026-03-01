@@ -75,6 +75,10 @@ def parse_args() -> argparse.Namespace:
         "--max_maps", type=int, default=None,
         help="Limit number of song directories to use",
     )
+    parser.add_argument(
+        "--keep_checkpoints", type=int, default=0,
+        help="Number of most recent checkpoints to keep (0 = keep all)",
+    )
     return parser.parse_args()
 
 
@@ -129,6 +133,17 @@ def save_checkpoint(
         ckpt["audio_encoder_state_dict"] = audio_encoder_state
     torch.save(ckpt, path)
     logger.info("Saved checkpoint to %s", path)
+
+
+def cleanup_old_checkpoints(checkpoint_dir: Path, keep: int) -> None:
+    """Delete oldest checkpoints, keeping the most recent `keep` files."""
+    if keep <= 0:
+        return
+    checkpoints = sorted(checkpoint_dir.glob("ar_checkpoint_epoch_*.pt"))
+    to_remove = checkpoints[:-keep]
+    for old_ckpt in to_remove:
+        old_ckpt.unlink()
+        logger.info("Removed old checkpoint %s", old_ckpt)
 
 
 def build_rhythm_weight_mask(
@@ -476,6 +491,10 @@ def train(args: argparse.Namespace) -> None:
                 training_config,
                 audio_encoder_state=audio_encoder_state,
             )
+            if args.keep_checkpoints > 0:
+                cleanup_old_checkpoints(
+                    Path(training_config.checkpoint_dir), args.keep_checkpoints
+                )
 
     if distributed:
         dist.destroy_process_group()
