@@ -2,12 +2,17 @@ import argparse
 import copy
 import logging
 import math
+import os
+from contextlib import contextmanager
 from pathlib import Path
 
 import torch
+import torch.distributed as dist
 import torch.nn as nn
 import wandb
+from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data import DataLoader
+from torch.utils.data.distributed import DistributedSampler
 
 from ai_osu_maps.config import ARModelConfig, ARTrainingConfig
 from ai_osu_maps.data.ar_dataset import ARBeatmapDataset, ar_collate_fn
@@ -15,6 +20,35 @@ from ai_osu_maps.data.tokenizer import Tokenizer
 from ai_osu_maps.model.ar_transformer import ARTransformer
 
 logger = logging.getLogger(__name__)
+
+
+def _is_distributed() -> bool:
+    return int(os.environ.get("WORLD_SIZE", "1")) > 1
+
+
+def _get_rank() -> int:
+    return int(os.environ.get("RANK", "0"))
+
+
+def _get_local_rank() -> int:
+    return int(os.environ.get("LOCAL_RANK", "0"))
+
+
+def _is_main_process() -> bool:
+    return _get_rank() == 0
+
+
+@contextmanager
+def _maybe_no_sync(model: nn.Module, skip_sync: bool):
+    if skip_sync and isinstance(model, DDP):
+        with model.no_sync():
+            yield
+    else:
+        yield
+
+
+def _unwrap_model(model: nn.Module) -> nn.Module:
+    return model.module if isinstance(model, DDP) else model
 
 
 def parse_args() -> argparse.Namespace:
@@ -53,7 +87,8 @@ def _default_device() -> str:
 
 @torch.no_grad()
 def update_ema(ema_model: nn.Module, model: nn.Module, decay: float) -> None:
-    for ema_param, param in zip(ema_model.parameters(), model.parameters()):
+    source = _unwrap_model(model)
+    for ema_param, param in zip(ema_model.parameters(), source.parameters()):
         ema_param.lerp_(param, 1.0 - decay)
 
 
@@ -70,7 +105,7 @@ def cosine_warmup_schedule(
 
 def save_checkpoint(
     path: Path,
-    model: ARTransformer,
+    model: nn.Module,
     ema_model: ARTransformer,
     optimizer: torch.optim.Optimizer,
     epoch: int,
@@ -81,7 +116,7 @@ def save_checkpoint(
 ) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     ckpt = {
-        "model_state_dict": model.state_dict(),
+        "model_state_dict": _unwrap_model(model).state_dict(),
         "ema_state_dict": ema_model.state_dict(),
         "optimizer_state_dict": optimizer.state_dict(),
         "epoch": epoch,
@@ -161,16 +196,27 @@ def train(args: argparse.Namespace) -> None:
     if args.log_every is not None:
         training_config.log_every = args.log_every
 
-    device = torch.device(args.device or _default_device())
+    distributed = _is_distributed()
+    rank = _get_rank()
+    local_rank = _get_local_rank()
+    is_main = _is_main_process()
+
+    if distributed:
+        dist.init_process_group(backend="nccl")
+        torch.cuda.set_device(local_rank)
+        device = torch.device("cuda", local_rank)
+    else:
+        device = torch.device(args.device or _default_device())
 
     logging.basicConfig(
-        level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s"
+        level=logging.INFO if is_main else logging.WARNING,
+        format="%(asctime)s %(levelname)s %(message)s",
     )
-    logger.info("Using device: %s", device)
+    logger.info("Using device: %s (rank %d/%d)", device, rank, int(os.environ.get("WORLD_SIZE", "1")))
 
-    # wandb
+    # wandb (rank 0 only)
     wandb_run = None
-    if args.wandb_project:
+    if args.wandb_project and is_main:
         wandb_run = wandb.init(
             project=args.wandb_project,
             config={
@@ -211,10 +257,16 @@ def train(args: argparse.Namespace) -> None:
 
     effective_batch_size = min(training_config.batch_size, len(dataset))
     num_workers = training_config.num_workers if device.type == "cuda" else 0
+
+    sampler = None
+    if distributed:
+        sampler = DistributedSampler(dataset, shuffle=True)
+
     dataloader = DataLoader(
         dataset,
         batch_size=effective_batch_size,
-        shuffle=True,
+        shuffle=(sampler is None),
+        sampler=sampler,
         num_workers=num_workers,
         collate_fn=ar_collate_fn,
         pin_memory=(device.type == "cuda"),
@@ -240,7 +292,22 @@ def train(args: argparse.Namespace) -> None:
     param_count = sum(p.numel() for p in model.parameters())
     logger.info("ARTransformer: %.1fM parameters", param_count / 1e6)
 
-    # Optimizer
+    # Resume (load into unwrapped model before DDP wrapping)
+    start_epoch = 0
+    global_step = 0
+    if args.resume:
+        ckpt = torch.load(args.resume, map_location=device, weights_only=False)
+        model.load_state_dict(ckpt["model_state_dict"])
+        ema_model.load_state_dict(ckpt["ema_state_dict"])
+        start_epoch = ckpt["epoch"] + 1
+        global_step = ckpt["global_step"]
+        logger.info("Resumed from epoch %d, step %d", start_epoch, global_step)
+
+    # Wrap in DDP after loading weights
+    if distributed:
+        model = DDP(model, device_ids=[local_rank], find_unused_parameters=True)
+
+    # Optimizer (must reference DDP-wrapped model parameters)
     optimizer = torch.optim.AdamW(
         model.parameters(),
         lr=training_config.lr,
@@ -248,17 +315,8 @@ def train(args: argparse.Namespace) -> None:
         betas=training_config.betas,
     )
 
-    # Resume
-    start_epoch = 0
-    global_step = 0
     if args.resume:
-        ckpt = torch.load(args.resume, map_location=device, weights_only=False)
-        model.load_state_dict(ckpt["model_state_dict"])
-        ema_model.load_state_dict(ckpt["ema_state_dict"])
         optimizer.load_state_dict(ckpt["optimizer_state_dict"])
-        start_epoch = ckpt["epoch"] + 1
-        global_step = ckpt["global_step"]
-        logger.info("Resumed from epoch %d, step %d", start_epoch, global_step)
 
     total_steps = training_config.max_epochs * len(dataloader)
     min_lr_ratio = training_config.min_lr / training_config.lr
@@ -277,6 +335,9 @@ def train(args: argparse.Namespace) -> None:
     )
 
     for epoch in range(start_epoch, training_config.max_epochs):
+        if sampler is not None:
+            sampler.set_epoch(epoch)
+
         model.train()
         epoch_loss = 0.0
         epoch_steps = 0
@@ -307,44 +368,48 @@ def train(args: argparse.Namespace) -> None:
             # Text is None during training (no text prompts in dataset)
             # drop_text would apply if we had text
 
-            with torch.amp.autocast(
-                device.type, dtype=autocast_dtype, enabled=use_autocast
-            ):
-                logits = model(
-                    input_ids,
-                    audio_features,
-                    difficulty,
-                    cs,
-                    ar,
-                    od,
-                    hp,
-                    audio_mask=audio_mask,
-                    text_emb=None,
-                    drop_scalars=drop_scalars,
-                )  # (B, S-1, vocab)
+            is_accum_step = (
+                (batch_idx + 1) % accum_steps != 0
+                and (batch_idx + 1) != len(dataloader)
+            )
 
-                # Cross-entropy loss with rhythm weighting
-                loss_per_token = nn.functional.cross_entropy(
-                    logits.reshape(-1, logits.shape[-1]),
-                    target_ids.reshape(-1),
-                    ignore_index=tokenizer.pad_id,
-                    reduction="none",
-                ).reshape(target_ids.shape)
+            with _maybe_no_sync(model, skip_sync=is_accum_step):
+                with torch.amp.autocast(
+                    device.type, dtype=autocast_dtype, enabled=use_autocast
+                ):
+                    logits = model(
+                        input_ids,
+                        audio_features,
+                        difficulty,
+                        cs,
+                        ar,
+                        od,
+                        hp,
+                        audio_mask=audio_mask,
+                        text_emb=None,
+                        drop_scalars=drop_scalars,
+                    )  # (B, S-1, vocab)
 
-                # Apply rhythm weight
-                weights = build_rhythm_weight_mask(
-                    target_ids, tokenizer, training_config.rhythm_weight
-                )
+                    # Cross-entropy loss with rhythm weighting
+                    loss_per_token = nn.functional.cross_entropy(
+                        logits.reshape(-1, logits.shape[-1]),
+                        target_ids.reshape(-1),
+                        ignore_index=tokenizer.pad_id,
+                        reduction="none",
+                    ).reshape(target_ids.shape)
 
-                masked_loss = loss_per_token * weights * target_mask
-                loss = masked_loss.sum() / target_mask.sum().clamp(min=1)
-                loss = loss / accum_steps
+                    # Apply rhythm weight
+                    weights = build_rhythm_weight_mask(
+                        target_ids, tokenizer, training_config.rhythm_weight
+                    )
 
-            loss.backward()
+                    masked_loss = loss_per_token * weights * target_mask
+                    loss = masked_loss.sum() / target_mask.sum().clamp(min=1)
+                    loss = loss / accum_steps
 
-            if (batch_idx + 1) % accum_steps == 0 or (batch_idx + 1) == len(
-                dataloader
-            ):
+                loss.backward()
+
+            if not is_accum_step:
                 torch.nn.utils.clip_grad_norm_(
                     model.parameters(), training_config.gradient_clip_norm
                 )
@@ -368,9 +433,7 @@ def train(args: argparse.Namespace) -> None:
             epoch_loss += loss.item() * accum_steps
             epoch_steps += 1
 
-            if global_step % training_config.log_every == 0 and (
-                (batch_idx + 1) % accum_steps == 0
-            ):
+            if is_main and global_step % training_config.log_every == 0 and not is_accum_step:
                 avg_loss = epoch_loss / epoch_steps
                 current_lr = optimizer.param_groups[0]["lr"]
                 logger.info(
@@ -394,7 +457,7 @@ def train(args: argparse.Namespace) -> None:
         avg_epoch_loss = epoch_loss / max(epoch_steps, 1)
         logger.info("Epoch %d complete. Avg loss: %.4f", epoch, avg_epoch_loss)
 
-        if (epoch + 1) % training_config.save_every_epoch == 0:
+        if is_main and (epoch + 1) % training_config.save_every_epoch == 0:
             ckpt_path = (
                 Path(training_config.checkpoint_dir)
                 / f"ar_checkpoint_epoch_{epoch:04d}.pt"
@@ -410,6 +473,9 @@ def train(args: argparse.Namespace) -> None:
                 training_config,
                 audio_encoder_state=audio_encoder_state,
             )
+
+    if distributed:
+        dist.destroy_process_group()
 
 
 if __name__ == "__main__":

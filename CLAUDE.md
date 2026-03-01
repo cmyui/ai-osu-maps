@@ -56,14 +56,24 @@ python precompute_audio.py \
 ### 3. Train
 
 ```bash
+# Single GPU
 python train_ar.py \
   --dataset_dir dataset \
   --device cuda \
   --batch_size 8 \
   --max_epochs 500 \
   --log_every 25
+
+# Multi-GPU (DDP via torchrun)
+torchrun --nproc_per_node=2 train_ar.py \
+  --dataset_dir dataset \
+  --batch_size 16 \
+  --max_epochs 500 \
+  --log_every 25
 ```
 
+- Supports multi-GPU training via `torchrun` (DDP with NCCL backend)
+- When using `torchrun`, `--device` is ignored; each process uses its assigned GPU
 - Loads pre-cached audio features + parses .osu files at startup
 - Teacher forcing with cross-entropy loss and rhythm token weighting (3x)
 - Cosine warmup LR schedule, AdamW optimizer, gradient accumulation (4 steps)
