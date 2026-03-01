@@ -19,8 +19,8 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Generate osu! beatmaps from audio using autoregressive model"
     )
-    parser.add_argument("--audio_path", type=str, required=True, help="Path to audio file")
-    parser.add_argument("--output_dir", type=str, default="output", help="Output directory")
+    parser.add_argument("--audio-path", type=str, required=True, help="Path to audio file")
+    parser.add_argument("--output-dir", type=str, default="output", help="Output directory")
     parser.add_argument("--checkpoint", type=str, required=True, help="Model checkpoint path")
     parser.add_argument("--prompt", type=str, default=None, help="Text prompt for style")
     parser.add_argument("--difficulty", type=float, default=5.0, help="Star rating")
@@ -31,20 +31,20 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--bpm", type=float, default=120.0, help="BPM for timing")
     parser.add_argument("--offset", type=int, default=0, help="Timing offset in ms")
     parser.add_argument("--temperature", type=float, default=0.9)
-    parser.add_argument("--timing_temperature", type=float, default=0.1, help="Temperature for timing tokens")
-    parser.add_argument("--top_k", type=int, default=0)
-    parser.add_argument("--top_p", type=float, default=0.95)
-    parser.add_argument("--cfg_scale", type=float, default=2.0)
-    parser.add_argument("--max_tokens", type=int, default=8192)
-    parser.add_argument("--no_monotonic_time", action="store_true", help="Disable monotonic time constraint")
+    parser.add_argument("--timing-temperature", type=float, default=0.1, help="Temperature for timing tokens")
+    parser.add_argument("--top-k", type=int, default=0)
+    parser.add_argument("--top-p", type=float, default=0.95)
+    parser.add_argument("--cfg-scale", type=float, default=2.0)
+    parser.add_argument("--max-tokens", type=int, default=8192)
+    parser.add_argument("--no-monotonic-time", action="store_true", help="Disable monotonic time constraint")
     parser.add_argument("--device", type=str, default=None)
     parser.add_argument("--osz", action="store_true", help="Export as .osz")
     parser.add_argument("--stream", action="store_true", help="Stream tokens to stderr")
     parser.add_argument("--mapper", type=int, default=0, help="Mapper ID (0 = unknown)")
     parser.add_argument("--year", type=float, default=0.0, help="Year condition (0.0 = unknown)")
-    parser.add_argument("--no_ema", action="store_true", help="Use trained weights instead of EMA")
+    parser.add_argument("--no-ema", action="store_true", help="Use trained weights instead of EMA")
     parser.add_argument(
-        "--audio_encoder", type=str, default=None,
+        "--audio-encoder", type=str, default=None,
         help="Path to audio_encoder.pt (overrides checkpoint-embedded state)",
     )
     return parser.parse_args()

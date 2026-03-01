@@ -55,32 +55,32 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Train autoregressive beatmap generator"
     )
-    parser.add_argument("--dataset_dir", type=str, default="dataset")
-    parser.add_argument("--batch_size", type=int, default=None)
+    parser.add_argument("--dataset-dir", type=str, default="dataset")
+    parser.add_argument("--batch-size", type=int, default=None)
     parser.add_argument("--lr", type=float, default=None)
-    parser.add_argument("--max_epochs", type=int, default=None)
-    parser.add_argument("--checkpoint_dir", type=str, default="checkpoints")
+    parser.add_argument("--max-epochs", type=int, default=None)
+    parser.add_argument("--checkpoint-dir", type=str, default="checkpoints")
     parser.add_argument(
         "--resume", type=str, default=None, help="Path to checkpoint to resume from"
     )
     parser.add_argument("--device", type=str, default=None)
-    parser.add_argument("--wandb_project", type=str, default=None)
-    parser.add_argument("--max_seq_len", type=int, default=None)
-    parser.add_argument("--n_layers", type=int, default=None)
-    parser.add_argument("--warmup_steps", type=int, default=None)
-    parser.add_argument("--gradient_accumulation_steps", type=int, default=None)
-    parser.add_argument("--log_every", type=int, default=None)
-    parser.add_argument("--save_every", type=int, default=None, help="Save checkpoint every N epochs")
+    parser.add_argument("--wandb-project", type=str, default=None)
+    parser.add_argument("--max-seq-len", type=int, default=None)
+    parser.add_argument("--n-layers", type=int, default=None)
+    parser.add_argument("--warmup-steps", type=int, default=None)
+    parser.add_argument("--gradient-accumulation-steps", type=int, default=None)
+    parser.add_argument("--log-every", type=int, default=None)
+    parser.add_argument("--save-every", type=int, default=None, help="Save checkpoint every N epochs")
     parser.add_argument(
-        "--max_maps", type=int, default=None,
+        "--max-maps", type=int, default=None,
         help="Limit number of song directories to use",
     )
     parser.add_argument(
-        "--keep_checkpoints", type=int, default=0,
+        "--keep-checkpoints", type=int, default=0,
         help="Number of most recent checkpoints to keep (0 = keep all)",
     )
     parser.add_argument(
-        "--window_sec", type=float, default=None,
+        "--window-sec", type=float, default=None,
         help="Train on random time windows of this duration (seconds). "
         "Slices both tokens and audio features to the window.",
     )
