@@ -4,7 +4,7 @@ Fetches .osz archives from mirror sites, extracts audio and .osu files,
 and organizes them into: dataset/{beatmapset_id}/audio.{ext} + *.osu
 
 Usage:
-    python download_dataset.py --limit 100 --output_dir dataset
+    python -m dataset_pipeline.download --dataset_dir dataset --limit 100
 """
 import argparse
 import asyncio
@@ -63,19 +63,6 @@ def _load_dotenv(path: Path) -> None:
                 continue
             key, _, value = line.partition("=")
             os.environ.setdefault(key.strip(), value.strip())
-
-
-def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Download beatmap sets for training")
-    parser.add_argument("--output_dir", type=str, default="dataset")
-    parser.add_argument("--limit", type=int, default=100, help="Max beatmap sets to download")
-    parser.add_argument("--dry_run", action="store_true")
-    parser.add_argument("--chunk_size", type=int, default=CHUNK_SIZE)
-    parser.add_argument(
-        "--set_ids_file", type=str, default=None,
-        help="TSV file with beatmapset_id in first column (skips S3/Cheesegull)",
-    )
-    return parser.parse_args()
 
 
 def list_beatmap_ids_from_s3(limit: int) -> list[int]:
@@ -432,48 +419,71 @@ async def download_all(
     return total_success
 
 
-async def async_main() -> None:
-    args = parse_args()
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-    logging.getLogger("httpx").setLevel(logging.WARNING)
-    logging.getLogger("httpcore").setLevel(logging.WARNING)
+async def run(
+    dataset_dir: str,
+    *,
+    set_ids_file: str | None = None,
+    limit: int = 100,
+    chunk_size: int = CHUNK_SIZE,
+    dry_run: bool = False,
+) -> None:
+    """Download beatmap sets into the dataset directory."""
+    _load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 
-    _load_dotenv(Path(__file__).parent / ".env")
-
-    output_dir = Path(args.output_dir)
+    output_dir = Path(dataset_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    if args.set_ids_file:
-        # Load beatmapset IDs directly from TSV
-        set_ids_path = Path(args.set_ids_file)
+    if set_ids_file:
+        set_ids_path = Path(set_ids_file)
         sets_to_download = []
         with open(set_ids_path) as f:
             for line in f:
                 parts = line.strip().split()
                 if parts and parts[0].isdigit():
                     sets_to_download.append(int(parts[0]))
-        sets_to_download = sets_to_download[: args.limit]
+        sets_to_download = sets_to_download[:limit]
         logger.info("Loaded %d beatmapset IDs from %s", len(sets_to_download), set_ids_path)
     else:
-        # Get beatmap IDs from S3 (sync boto3 call)
         logger.info("Listing beatmap IDs from S3...")
-        beatmap_ids = list_beatmap_ids_from_s3(args.limit)
+        beatmap_ids = list_beatmap_ids_from_s3(limit)
         logger.info("Found %d beatmap IDs in S3", len(beatmap_ids))
 
-        # Resolve to unique beatmapset IDs (async)
         logger.info("Resolving beatmap IDs to set IDs...")
-        sets_to_download = await resolve_all_set_ids(beatmap_ids, args.limit)
+        sets_to_download = await resolve_all_set_ids(beatmap_ids, limit)
         logger.info("Will download %d beatmap sets", len(sets_to_download))
 
-    if args.dry_run:
+    if dry_run:
         for sid in sets_to_download:
             logger.info("[dry run] Would download set %d", sid)
         return
 
-    # Download and extract in chunks
-    success = await download_all(sets_to_download, output_dir, args.chunk_size)
+    success = await download_all(sets_to_download, output_dir, chunk_size)
     logger.info("Done. Downloaded %d/%d beatmap sets to %s", success, len(sets_to_download), output_dir)
 
 
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Download beatmap sets for training")
+    parser.add_argument("--dataset_dir", type=str, default="dataset")
+    parser.add_argument("--limit", type=int, default=100, help="Max beatmap sets to download")
+    parser.add_argument("--dry_run", action="store_true")
+    parser.add_argument("--chunk_size", type=int, default=CHUNK_SIZE)
+    parser.add_argument(
+        "--set_ids_file", type=str, default=None,
+        help="TSV file with beatmapset_id in first column (skips S3/Cheesegull)",
+    )
+    return parser.parse_args()
+
+
 if __name__ == "__main__":
-    asyncio.run(async_main())
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
+
+    args = parse_args()
+    asyncio.run(run(
+        args.dataset_dir,
+        set_ids_file=args.set_ids_file,
+        limit=args.limit,
+        chunk_size=args.chunk_size,
+        dry_run=args.dry_run,
+    ))

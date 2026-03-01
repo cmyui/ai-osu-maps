@@ -4,7 +4,7 @@ Saves one beatmap_tokens.pt per song directory so training startup
 can skip the expensive slider.Beatmap.from_path() parsing.
 
 Usage:
-    python precompute_tokens.py --dataset_dir dataset
+    python -m dataset_pipeline.precompute_tokens --dataset_dir dataset
 """
 import argparse
 import logging
@@ -35,21 +35,12 @@ def _is_osu_standard(osu_path: Path) -> bool:
     return True
 
 
-def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Pre-compute tokenized beatmaps")
-    parser.add_argument("--dataset_dir", type=str, required=True)
-    parser.add_argument("--force", action="store_true", help="Recompute even if cached")
-    return parser.parse_args()
-
-
-def main() -> None:
-    args = parse_args()
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-
-    dataset_dir = Path(args.dataset_dir)
+def run(dataset_dir: str, *, force: bool = False) -> None:
+    """Pre-compute tokenized beatmaps for all songs in the dataset."""
+    dataset_path = Path(dataset_dir)
     tokenizer = Tokenizer()
 
-    song_dirs = sorted(d for d in dataset_dir.iterdir() if d.is_dir())
+    song_dirs = sorted(d for d in dataset_path.iterdir() if d.is_dir())
     logger.info("Found %d song directories", len(song_dirs))
 
     done = 0
@@ -60,7 +51,7 @@ def main() -> None:
     for song_dir in song_dirs:
         cache_path = song_dir / CACHE_FILENAME
 
-        if cache_path.exists() and not args.force:
+        if cache_path.exists() and not force:
             cached += 1
             continue
 
@@ -105,5 +96,15 @@ def main() -> None:
     )
 
 
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Pre-compute tokenized beatmaps")
+    parser.add_argument("--dataset_dir", type=str, required=True)
+    parser.add_argument("--force", action="store_true", help="Recompute even if cached")
+    return parser.parse_args()
+
+
 if __name__ == "__main__":
-    main()
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+
+    args = parse_args()
+    run(args.dataset_dir, force=args.force)

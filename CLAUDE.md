@@ -17,7 +17,7 @@ Autoregressive transformer for generating osu! beatmaps from audio.
 
 The AudioEncoder's projection layer is randomly initialized. The same weights must be used across precomputation, training, and inference:
 
-1. `precompute_audio.py` saves `audio_encoder.pt` in the dataset directory on first run
+1. `dataset_pipeline/precompute_audio.py` saves `audio_encoder.pt` in the dataset directory on first run
 2. `train_ar.py` loads `audio_encoder.pt` from the dataset dir and embeds it in training checkpoints
 3. `inference_ar.py` loads the audio encoder state from the checkpoint (or `--audio_encoder` CLI arg)
 
@@ -25,35 +25,41 @@ If `audio_encoder.pt` is missing or features were precomputed with different enc
 
 ## Pipeline
 
-### 1. Download beatmapsets
+### 1. Generate dataset (unified)
 
 ```bash
-python download_dataset.py \
-  --set_ids_file top_beatmapsets.tsv \
-  --output_dir dataset \
-  --limit 10000
-```
-
-- Fetches .osz archives from mirror sites, extracts audio + .osu files
-- `--set_ids_file`: TSV with beatmapset_id in first column (bypasses S3 lookup)
-- Requires `.env` with AWS credentials for S3-based discovery (not needed with `--set_ids_file`)
-- Idempotent: skips already-downloaded directories
-
-### 2. Precompute audio features
-
-```bash
-python precompute_audio.py \
+python generate_dataset.py \
   --dataset_dir dataset \
+  --set_ids_file top_beatmapsets.tsv \
+  --limit 10000 \
   --device cuda
 ```
 
-- Runs MERT on each song's audio file, saves `audio_features.pt` per directory
-- Saves `audio_encoder.pt` in dataset dir on first run (critical for inference)
-- `--force`: Recompute all features and save new encoder state
-- Idempotent: skips directories that already have `audio_features.pt`
-- Can run concurrently with download and training
+Runs all three preparation stages sequentially:
+1. **Download** — fetches .osz archives from mirror sites, extracts audio + .osu files
+2. **Precompute audio** — runs MERT on each song's audio, saves `audio_features.pt` per directory
+3. **Precompute tokens** — parses .osu files into tokenized beatmaps, saves `beatmap_tokens.pt` per directory
 
-### 3. Train
+Each stage is idempotent (completed work is skipped), so re-running is safe and fast.
+
+Options:
+- `--set_ids_file`: TSV with beatmapset_id in first column (bypasses S3 lookup)
+- `--device`: Torch device for audio encoding (default: cuda if available, else cpu)
+- `--force`: Recompute cached audio features and tokens
+- `--dry_run`: List downloads without fetching (skips precompute stages)
+- `--limit`: Max beatmap sets to download (default: 100)
+- `--chunk_size`: Download chunk size (default: 200)
+
+Individual stages can also be run standalone:
+```bash
+python -m dataset_pipeline.download --dataset_dir dataset --set_ids_file top_beatmapsets.tsv --limit 10000
+python -m dataset_pipeline.precompute_audio --dataset_dir dataset --device cuda
+python -m dataset_pipeline.precompute_tokens --dataset_dir dataset
+```
+
+Requires `.env` with AWS credentials for S3-based discovery (not needed with `--set_ids_file`).
+
+### 2. Train
 
 ```bash
 # Single GPU
@@ -127,10 +133,12 @@ Keep the WSL instance alive with `exec sleep infinity` at the end of the setup s
 ## Key files
 
 ```
+generate_dataset.py                      # Unified dataset pipeline orchestrator
+dataset_pipeline/download.py             # Beatmapset downloading
+dataset_pipeline/precompute_audio.py     # Audio feature caching (MERT)
+dataset_pipeline/precompute_tokens.py    # Beatmap token precomputation
 train_ar.py                              # Training entry point
 inference_ar.py                          # Inference entry point
-precompute_audio.py                      # Audio feature caching
-download_dataset.py                      # Dataset downloading
 ai_osu_maps/config.py                   # ARModelConfig, ARTrainingConfig, GenerationConfig
 ai_osu_maps/model/ar_transformer.py     # ARTransformer (decoder-only)
 ai_osu_maps/model/audio_encoder.py      # MERT-based audio encoder
