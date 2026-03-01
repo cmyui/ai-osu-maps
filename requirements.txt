@@ -1,7 +1,7 @@
 torch==2.6.0
 torchaudio==2.6.0
 transformers==4.48.3
-slider==0.8.4
+slider @ git+https://github.com/cmyui/slider.git@6f597efab283a82d73a309bd20ddef6ac60dc3e9
 einops==0.8.1
 wandb==0.19.6
 sentence-transformers==3.4.1
