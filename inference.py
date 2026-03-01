@@ -19,10 +19,18 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Generate osu! beatmaps from audio using autoregressive model"
     )
-    parser.add_argument("--audio-path", type=str, required=True, help="Path to audio file")
-    parser.add_argument("--output-dir", type=str, default="output", help="Output directory")
-    parser.add_argument("--checkpoint", type=str, required=True, help="Model checkpoint path")
-    parser.add_argument("--prompt", type=str, default=None, help="Text prompt for style")
+    parser.add_argument(
+        "--audio-path", type=str, required=True, help="Path to audio file"
+    )
+    parser.add_argument(
+        "--output-dir", type=str, default="output", help="Output directory"
+    )
+    parser.add_argument(
+        "--checkpoint", type=str, required=True, help="Model checkpoint path"
+    )
+    parser.add_argument(
+        "--prompt", type=str, default=None, help="Text prompt for style"
+    )
     parser.add_argument("--difficulty", type=float, default=5.0, help="Star rating")
     parser.add_argument("--cs", type=float, default=4.0, help="Circle size")
     parser.add_argument("--ar", type=float, default=9.0, help="Approach rate")
@@ -31,20 +39,35 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--bpm", type=float, default=120.0, help="BPM for timing")
     parser.add_argument("--offset", type=int, default=0, help="Timing offset in ms")
     parser.add_argument("--temperature", type=float, default=0.9)
-    parser.add_argument("--timing-temperature", type=float, default=0.1, help="Temperature for timing tokens")
+    parser.add_argument(
+        "--timing-temperature",
+        type=float,
+        default=0.1,
+        help="Temperature for timing tokens",
+    )
     parser.add_argument("--top-k", type=int, default=0)
     parser.add_argument("--top-p", type=float, default=0.95)
     parser.add_argument("--cfg-scale", type=float, default=2.0)
     parser.add_argument("--max-tokens", type=int, default=8192)
-    parser.add_argument("--no-monotonic-time", action="store_true", help="Disable monotonic time constraint")
+    parser.add_argument(
+        "--no-monotonic-time",
+        action="store_true",
+        help="Disable monotonic time constraint",
+    )
     parser.add_argument("--device", type=str, default=None)
     parser.add_argument("--osz", action="store_true", help="Export as .osz")
     parser.add_argument("--stream", action="store_true", help="Stream tokens to stderr")
     parser.add_argument("--mapper", type=int, default=0, help="Mapper ID (0 = unknown)")
-    parser.add_argument("--year", type=float, default=0.0, help="Year condition (0.0 = unknown)")
-    parser.add_argument("--no-ema", action="store_true", help="Use trained weights instead of EMA")
     parser.add_argument(
-        "--audio-encoder", type=str, default=None,
+        "--year", type=float, default=0.0, help="Year condition (0.0 = unknown)"
+    )
+    parser.add_argument(
+        "--no-ema", action="store_true", help="Use trained weights instead of EMA"
+    )
+    parser.add_argument(
+        "--audio-encoder",
+        type=str,
+        default=None,
         help="Path to audio_encoder.pt (overrides checkpoint-embedded state)",
     )
     return parser.parse_args()
@@ -59,7 +82,9 @@ def _default_device() -> str:
 
 
 def load_checkpoint(
-    checkpoint_path: str, device: torch.device, use_ema: bool = True,
+    checkpoint_path: str,
+    device: torch.device,
+    use_ema: bool = True,
 ) -> tuple[Transformer, ModelConfig, dict | None]:
     ckpt = torch.load(checkpoint_path, map_location=device, weights_only=False)
 
@@ -102,7 +127,7 @@ def generate(args: argparse.Namespace) -> None:
     # Load model
     logger.info("Loading checkpoint: %s", args.checkpoint)
     model, model_config, audio_encoder_state = load_checkpoint(
-        args.checkpoint, device, use_ema=not args.no_ema,
+        args.checkpoint, device, use_ema=not args.no_ema
     )
 
     # Tokenizer
@@ -127,9 +152,7 @@ def generate(args: argparse.Namespace) -> None:
     waveform = AudioEncoder.load_audio(args.audio_path).to(device)
     with torch.no_grad():
         audio_features = audio_encoder(waveform)  # (1, T, d_model)
-    audio_mask = torch.ones(
-        1, audio_features.shape[1], dtype=torch.bool, device=device
-    )
+    audio_mask = torch.ones(1, audio_features.shape[1], dtype=torch.bool, device=device)
 
     # Encode text prompt
     text_emb = None
@@ -163,9 +186,16 @@ def generate(args: argparse.Namespace) -> None:
     # Generate
     logger.info("Generating beatmap...")
     token_ids = sample_autoregressively(
-        model, tokenizer, audio_features,
-        difficulty, cs_val, ar_val, od_val, hp_val,
-        mapper_id, year_val,
+        model,
+        tokenizer,
+        audio_features,
+        difficulty,
+        cs_val,
+        ar_val,
+        od_val,
+        hp_val,
+        mapper_id,
+        year_val,
         gen_config,
         audio_mask=audio_mask,
         text_emb=text_emb,

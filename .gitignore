@@ -9,7 +9,6 @@ __pycache__/
 
 # Data & models
 dataset/
-osu_files/
 checkpoints/
 *.pt
 *.pth
