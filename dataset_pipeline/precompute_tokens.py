@@ -76,6 +76,7 @@ def _process_song_dir(
                 }
             )
         except Exception:
+            logger.error("Failed to parse %s", osu_path, exc_info=True)
             error_paths.append(str(osu_path))
 
     if beatmaps:

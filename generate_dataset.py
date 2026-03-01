@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 """Unified dataset generation pipeline.
 
 Runs all three dataset preparation stages sequentially:
