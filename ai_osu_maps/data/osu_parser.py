@@ -305,7 +305,7 @@ def _parse_slider(
         event_times,
         beatmap,
         time_event=True,
-        pos=np.array(slider.curve(1)),
+        pos=np.asarray(slider.curve(1)).flatten()[:2],
         last_pos=last_pos,
         hitsound_ref_times=[slider.end_time],
         hitsounds=[slider.edge_sounds[-1] if len(slider.edge_sounds) > 0 else 0],
