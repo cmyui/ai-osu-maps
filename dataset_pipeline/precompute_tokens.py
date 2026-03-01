@@ -8,7 +8,9 @@ Usage:
 """
 
 import argparse
+import concurrent.futures
 import logging
+import os
 from pathlib import Path
 
 import torch
@@ -36,65 +38,106 @@ def _is_osu_standard(osu_path: Path) -> bool:
     return True
 
 
+def _process_song_dir(
+    song_dir: Path, cache_path: Path
+) -> tuple[str, int, list[str]]:
+    """Process a single song directory. Returns (status, skipped_modes, error_paths)."""
+    tokenizer = Tokenizer()
+    beatmaps: list[dict] = []
+    skipped_modes = 0
+    error_paths: list[str] = []
+
+    for osu_path in sorted(song_dir.glob("*.osu")):
+        if not _is_osu_standard(osu_path):
+            skipped_modes += 1
+            continue
+        try:
+            beatmap = Beatmap.from_path(osu_path)
+            events, _ = parse_beatmap(beatmap)
+            if len(events) == 0:
+                continue
+            token_ids = events_to_tokens(events, tokenizer)
+            beatmaps.append(
+                {
+                    "token_ids": token_ids,
+                    "difficulty": getattr(beatmap, "star_rating", None) or 5.0,
+                    "cs": float(beatmap.circle_size),
+                    "ar": float(beatmap.approach_rate),
+                    "od": float(beatmap.overall_difficulty),
+                    "hp": float(beatmap.hp_drain_rate),
+                }
+            )
+        except Exception:
+            error_paths.append(str(osu_path))
+
+    if beatmaps:
+        torch.save(beatmaps, cache_path)
+        return "done", skipped_modes, error_paths
+    return "failed", skipped_modes, error_paths
+
+
 def run(dataset_dir: str, *, force: bool = False) -> None:
     """Pre-compute tokenized beatmaps for all songs in the dataset."""
     dataset_path = Path(dataset_dir)
-    tokenizer = Tokenizer()
 
     song_dirs = sorted(d for d in dataset_path.iterdir() if d.is_dir())
     logger.info("Found %d song directories", len(song_dirs))
 
-    done = 0
+    # Collect work items, filtering cached upfront
+    work_items: list[tuple[Path, Path]] = []
     cached = 0
-    failed = 0
-    skipped_modes = 0
 
     for song_dir in song_dirs:
         cache_path = song_dir / CACHE_FILENAME
-
         if cache_path.exists() and not force:
             cached += 1
             continue
+        work_items.append((song_dir, cache_path))
 
-        beatmaps: list[dict] = []
+    logger.info("To process: %d, already cached: %d", len(work_items), cached)
 
-        for osu_path in sorted(song_dir.glob("*.osu")):
-            if not _is_osu_standard(osu_path):
-                skipped_modes += 1
-                continue
+    if not work_items:
+        return
+
+    done = 0
+    failed = 0
+    skipped_modes = 0
+
+    max_workers = max(1, (os.cpu_count() or 1) - 2)
+    logger.info("Using %d worker processes", max_workers)
+
+    with concurrent.futures.ProcessPoolExecutor(max_workers=max_workers) as executor:
+        futures = {
+            executor.submit(_process_song_dir, song_dir, cache_path): song_dir
+            for song_dir, cache_path in work_items
+        }
+
+        for future in concurrent.futures.as_completed(futures):
+            song_dir = futures[future]
             try:
-                beatmap = Beatmap.from_path(osu_path)
-                events, _ = parse_beatmap(beatmap)
-                if len(events) == 0:
-                    continue
-                token_ids = events_to_tokens(events, tokenizer)
-                beatmaps.append(
-                    {
-                        "token_ids": token_ids,
-                        "difficulty": getattr(beatmap, "star_rating", None) or 5.0,
-                        "cs": float(beatmap.circle_size),
-                        "ar": float(beatmap.approach_rate),
-                        "od": float(beatmap.overall_difficulty),
-                        "hp": float(beatmap.hp_drain_rate),
-                    }
-                )
+                status, modes_skipped, error_paths = future.result()
             except Exception:
-                logger.exception("Failed to parse %s", osu_path)
+                logger.exception("Worker crashed on %s", song_dir)
+                failed += 1
+                continue
 
-        if beatmaps:
-            torch.save(beatmaps, cache_path)
-            done += 1
-        else:
-            failed += 1
+            skipped_modes += modes_skipped
+            for path in error_paths:
+                logger.error("Failed to parse %s", path)
 
-        if (done + failed) % 50 == 0 and (done + failed) > 0:
-            logger.info(
-                "Progress: %d done, %d cached, %d failed, %d skipped modes",
-                done,
-                cached,
-                failed,
-                skipped_modes,
-            )
+            if status == "done":
+                done += 1
+            else:
+                failed += 1
+
+            if (done + failed) % 50 == 0:
+                logger.info(
+                    "Progress: %d/%d done, %d failed, %d skipped modes",
+                    done,
+                    len(work_items),
+                    failed,
+                    skipped_modes,
+                )
 
     logger.info(
         "Complete: %d computed, %d already cached, %d failed (no valid beatmaps), %d skipped modes",
