@@ -65,9 +65,9 @@ This project depends on a [fork of slider](https://github.com/cmyui/slider) (an 
 The download pipeline needs a list of beatmapset IDs as a TSV file with `beatmapset_id` in the first column (additional columns are ignored):
 
 ```tsv
-1073074	40883
-1495669	36973
-765778	32131
+1073074
+1495669
+765778
 ```
 
 A sample `top_beatmapsets.tsv` is included in the repo, containing the most popular beatmapsets from [Akatsuki](https://akatsuki.gg)'s vanilla osu! leaderboards. You can use it directly or supply your own list sourced from the [osu! API](https://osu.ppy.sh/docs/index.html) or community databases.
