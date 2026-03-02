@@ -318,42 +318,79 @@ async def _download_osz(
     return None
 
 
+def _parse_audio_filename(osu_bytes: bytes) -> str | None:
+    """Extract AudioFilename from a .osu file's [General] section."""
+    try:
+        text = osu_bytes.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        return None
+    in_general = False
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped == "[General]":
+            in_general = True
+            continue
+        if in_general:
+            if stripped.startswith("["):
+                break
+            if stripped.startswith("AudioFilename:"):
+                return stripped.split(":", 1)[1].strip()
+    return None
+
+
 def _extract_osz(content: bytes, song_dir: Path) -> bool:
     """Extract audio + .osu files from .osz bytes into song_dir."""
     try:
         with zipfile.ZipFile(io.BytesIO(content)) as zf:
-            audio_found = False
-            osu_found = False
+            # Build a case-insensitive lookup for zip entries
+            zip_entries = {name.lower(): name for name in zf.namelist()}
 
-            song_dir.mkdir(parents=True, exist_ok=True)
+            # First pass: extract .osu files and collect referenced audio filenames
+            osu_files: list[tuple[str, bytes]] = []
+            audio_filenames: set[str] = set()
 
             for name in zf.namelist():
                 basename = Path(name).name
-                if not basename:
-                    continue
+                if basename and Path(basename).suffix.lower() == ".osu":
+                    osu_bytes = zf.read(name)
+                    osu_files.append((basename, osu_bytes))
+                    audio_name = _parse_audio_filename(osu_bytes)
+                    if audio_name:
+                        audio_filenames.add(audio_name)
 
-                suffix = Path(basename).suffix.lower()
-
-                if suffix in AUDIO_EXTENSIONS and not audio_found:
-                    audio_dest = song_dir / f"audio{suffix}"
-                    audio_dest.write_bytes(zf.read(name))
-                    audio_found = True
-
-                elif suffix == ".osu":
-                    osu_dest = song_dir / basename
-                    osu_dest.write_bytes(zf.read(name))
-                    osu_found = True
-
-            if not audio_found or not osu_found:
-                logger.warning(
-                    "Set %s: incomplete osz (audio=%s osu=%s)",
-                    song_dir.name,
-                    audio_found,
-                    osu_found,
-                )
-                if song_dir.exists():
-                    shutil.rmtree(song_dir)
+            if not osu_files:
+                logger.warning("Set %s: no .osu files in archive", song_dir.name)
                 return False
+
+            # Find the audio file referenced by the .osu files
+            audio_zip_name: str | None = None
+            for audio_name in audio_filenames:
+                # Try exact match first, then case-insensitive
+                if audio_name in zf.namelist():
+                    audio_zip_name = audio_name
+                    break
+                lower = audio_name.lower()
+                if lower in zip_entries:
+                    audio_zip_name = zip_entries[lower]
+                    break
+
+            if audio_zip_name is None:
+                logger.warning(
+                    "Set %s: audio file not found in archive (referenced: %s)",
+                    song_dir.name,
+                    audio_filenames,
+                )
+                return False
+
+            # Extract
+            song_dir.mkdir(parents=True, exist_ok=True)
+
+            audio_suffix = Path(audio_zip_name).suffix.lower()
+            audio_dest = song_dir / f"audio{audio_suffix}"
+            audio_dest.write_bytes(zf.read(audio_zip_name))
+
+            for basename, osu_bytes in osu_files:
+                (song_dir / basename).write_bytes(osu_bytes)
 
     except zipfile.BadZipFile:
         logger.warning("Set %s: bad zip file", song_dir.name)
