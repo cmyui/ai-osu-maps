@@ -7,7 +7,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch import Tensor
 
-from ai_osu_maps.model.conditioning import MapperEmbedder, ScalarEmbedder
+from ai_osu_maps.model.conditioning import MapperEmbedder
+from ai_osu_maps.model.conditioning import ScalarEmbedder
 
 
 class RoPE(nn.Module):
@@ -83,7 +84,11 @@ class CausalSelfAttention(nn.Module):
         k = rope(k, offset)
 
         out = F.scaled_dot_product_attention(
-            q, k, v, is_causal=True, dropout_p=self.dropout if self.training else 0.0
+            q,
+            k,
+            v,
+            is_causal=True,
+            dropout_p=self.dropout if self.training else 0.0,
         )
         out = out.transpose(1, 2).reshape(B, S, -1)
         return self.out_proj(out)
@@ -128,7 +133,10 @@ class CrossAttention(nn.Module):
             attn_mask = context_mask.unsqueeze(1).unsqueeze(2)
 
         out = F.scaled_dot_product_attention(
-            q, k, v, attn_mask=attn_mask,
+            q,
+            k,
+            v,
+            attn_mask=attn_mask,
             dropout_p=self.dropout if self.training else 0.0,
         )
         out = out.transpose(1, 2).reshape(B, S, -1)
@@ -266,15 +274,17 @@ class Transformer(nn.Module):
         )
 
         # Transformer blocks: cross-attention every 2nd layer
-        self.blocks = nn.ModuleList([
-            TransformerBlock(
-                d_model,
-                n_heads,
-                dropout,
-                has_cross_attention=(i % 2 == 1),
-            )
-            for i in range(n_layers)
-        ])
+        self.blocks = nn.ModuleList(
+            [
+                TransformerBlock(
+                    d_model,
+                    n_heads,
+                    dropout,
+                    has_cross_attention=(i % 2 == 1),
+                )
+                for i in range(n_layers)
+            ],
+        )
 
         # Output head
         self.ln_final = nn.LayerNorm(d_model)
@@ -319,7 +329,9 @@ class Transformer(nn.Module):
             "year": year,
         }
         cond = torch.zeros(
-            difficulty.shape[0], self.d_model, device=difficulty.device,
+            difficulty.shape[0],
+            self.d_model,
+            device=difficulty.device,
         )
         for key, value in scalars.items():
             emb = self.scalar_embeddings[key](value)
@@ -356,11 +368,18 @@ class Transformer(nn.Module):
             text_tokens = text_tokens.view(B, self.n_text_tokens, self.d_model)
 
             if drop_text is not None:
-                text_tokens = text_tokens * (~drop_text).unsqueeze(-1).unsqueeze(-1).float()
+                text_tokens = (
+                    text_tokens * (~drop_text).unsqueeze(-1).unsqueeze(-1).float()
+                )
 
             context = torch.cat([context, text_tokens], dim=1)
             if mask is not None:
-                text_mask = torch.ones(B, self.n_text_tokens, dtype=torch.bool, device=mask.device)
+                text_mask = torch.ones(
+                    B,
+                    self.n_text_tokens,
+                    dtype=torch.bool,
+                    device=mask.device,
+                )
                 mask = torch.cat([mask, text_mask], dim=1)
 
         return context, mask
@@ -406,10 +425,20 @@ class Transformer(nn.Module):
 
         # Conditioning
         cond = self._build_conditioning(
-            difficulty, cs, ar, od, hp, mapper_id, year, drop_mask,
+            difficulty,
+            cs,
+            ar,
+            od,
+            hp,
+            mapper_id,
+            year,
+            drop_mask,
         )
         context, context_mask = self._build_context(
-            audio_features, audio_mask, text_emb, drop_text
+            audio_features,
+            audio_mask,
+            text_emb,
+            drop_text,
         )
 
         # Transformer blocks
@@ -456,8 +485,17 @@ class Transformer(nn.Module):
             logits: (B, vocab_size) for the next token
         """
         logits = self.forward(
-            token_ids, audio_features, difficulty, cs, ar, od, hp,
-            mapper_id, year,
-            audio_mask=audio_mask, text_emb=text_emb, drop_mask=drop_mask,
+            token_ids,
+            audio_features,
+            difficulty,
+            cs,
+            ar,
+            od,
+            hp,
+            mapper_id,
+            year,
+            audio_mask=audio_mask,
+            text_emb=text_emb,
+            drop_mask=drop_mask,
         )
         return logits[:, -1, :]  # (B, vocab_size)

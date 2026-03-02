@@ -30,7 +30,9 @@ import os
 
 import torch.distributed as dist
 
-from dataset_pipeline import download, precompute_audio, precompute_tokens
+from dataset_pipeline import download
+from dataset_pipeline import precompute_audio
+from dataset_pipeline import precompute_tokens
 
 logger = logging.getLogger(__name__)
 
@@ -41,7 +43,10 @@ def parse_args() -> argparse.Namespace:
     )
 
     parser.add_argument(
-        "--dataset-dir", type=str, required=True, help="Dataset directory"
+        "--dataset-dir",
+        type=str,
+        required=True,
+        help="Dataset directory",
     )
 
     # Download stage
@@ -51,15 +56,28 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="CSV file with beatmapset_id in first column (skips S3/Cheesegull)",
     )
-    parser.add_argument("--download-offset", type=int, default=0, help="Skip first N beatmap sets")
     parser.add_argument(
-        "--limit", type=int, default=100, help="Max beatmap sets to download"
+        "--download-offset",
+        type=int,
+        default=0,
+        help="Skip first N beatmap sets",
     )
     parser.add_argument(
-        "--download-chunk-size", type=int, default=200, help="Download chunk size"
+        "--limit",
+        type=int,
+        default=100,
+        help="Max beatmap sets to download",
     )
     parser.add_argument(
-        "--dry-run", action="store_true", help="List downloads without fetching"
+        "--download-chunk-size",
+        type=int,
+        default=200,
+        help="Download chunk size",
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="List downloads without fetching",
     )
     parser.add_argument(
         "--force-download",
@@ -69,10 +87,16 @@ def parse_args() -> argparse.Namespace:
 
     # Audio precompute stage
     parser.add_argument(
-        "--device", type=str, default=None, help="Torch device for audio encoding"
+        "--device",
+        type=str,
+        default=None,
+        help="Torch device for audio encoding",
     )
     parser.add_argument(
-        "--audio-batch-size", type=int, default=8, help="Songs per audio encoding batch"
+        "--audio-batch-size",
+        type=int,
+        default=8,
+        help="Songs per audio encoding batch",
     )
     parser.add_argument(
         "--force-audio",
@@ -95,18 +119,26 @@ def parse_args() -> argparse.Namespace:
 
     # Skip stages
     parser.add_argument(
-        "--skip-download", action="store_true", help="Skip download stage"
+        "--skip-download",
+        action="store_true",
+        help="Skip download stage",
     )
     parser.add_argument(
-        "--skip-audio", action="store_true", help="Skip audio precompute stage"
+        "--skip-audio",
+        action="store_true",
+        help="Skip audio precompute stage",
     )
     parser.add_argument(
-        "--skip-tokens", action="store_true", help="Skip token precompute stage"
+        "--skip-tokens",
+        action="store_true",
+        help="Skip token precompute stage",
     )
 
     # All precompute stages
     parser.add_argument(
-        "--force", action="store_true", help="Recompute all cached features and tokens"
+        "--force",
+        action="store_true",
+        help="Recompute all cached features and tokens",
     )
 
     return parser.parse_args()
@@ -115,7 +147,8 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
     logging.basicConfig(
-        level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s"
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(message)s",
     )
     logging.getLogger("httpx").setLevel(logging.WARNING)
     logging.getLogger("httpcore").setLevel(logging.WARNING)
@@ -141,7 +174,7 @@ def main() -> None:
                     chunk_size=args.download_chunk_size,
                     dry_run=args.dry_run,
                     force=force_download,
-                )
+                ),
             )
         if distributed:
             dist.barrier()

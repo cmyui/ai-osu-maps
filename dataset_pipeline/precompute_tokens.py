@@ -17,10 +17,14 @@ import torch
 from slider import Beatmap
 
 from ai_osu_maps.data.event import EventType
-from ai_osu_maps.data.osu_parser import events_to_tokens, parse_beatmap
-from ai_osu_maps.data.tokenizer import MILLISECONDS_PER_STEP, Tokenizer
+from ai_osu_maps.data.osu_parser import events_to_tokens
+from ai_osu_maps.data.osu_parser import parse_beatmap
+from ai_osu_maps.data.tokenizer import MILLISECONDS_PER_STEP
+from ai_osu_maps.data.tokenizer import Tokenizer
 
-OBJECT_EVENT_TYPES = frozenset({EventType.CIRCLE, EventType.SLIDER_HEAD, EventType.SPINNER})
+OBJECT_EVENT_TYPES = frozenset(
+    {EventType.CIRCLE, EventType.SLIDER_HEAD, EventType.SPINNER},
+)
 
 
 def _compute_token_times_ms(token_ids: list[int], tokenizer: Tokenizer) -> list[int]:
@@ -42,6 +46,7 @@ def _compute_token_times_ms(token_ids: list[int], tokenizer: Tokenizer) -> list[
         times.append(cumulative_ms)
     return times
 
+
 logger = logging.getLogger(__name__)
 
 AUDIO_EXTENSIONS = {".mp3", ".wav", ".ogg", ".flac"}
@@ -61,9 +66,7 @@ def _is_osu_standard(osu_path: Path) -> bool:
     return True
 
 
-def _process_song_dir(
-    song_dir: Path, cache_path: Path
-) -> tuple[str, int, list[str]]:
+def _process_song_dir(song_dir: Path, cache_path: Path) -> tuple[str, int, list[str]]:
     """Process a single song directory. Returns (status, skipped_modes, error_paths)."""
     tokenizer = Tokenizer()
     beatmaps: list[dict] = []
@@ -96,7 +99,7 @@ def _process_song_dir(
                     "mapper_id": mapper_id,
                     "year": 0.0,  # TODO: source actual year from osu! API or metadata
                     "num_objects": num_objects,
-                }
+                },
             )
         except Exception:
             logger.error("Failed to parse %s", osu_path, exc_info=True)
@@ -111,7 +114,12 @@ def _process_song_dir(
 DEFAULT_MAX_WORKERS = max(1, (os.cpu_count() or 1) - 2)
 
 
-def run(dataset_dir: str, *, force: bool = False, max_workers: int = DEFAULT_MAX_WORKERS) -> None:
+def run(
+    dataset_dir: str,
+    *,
+    force: bool = False,
+    max_workers: int = DEFAULT_MAX_WORKERS,
+) -> None:
     """Pre-compute tokenized beatmaps for all songs in the dataset."""
     dataset_path = Path(dataset_dir)
 
@@ -186,13 +194,19 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Pre-compute tokenized beatmaps")
     parser.add_argument("--dataset-dir", type=str, required=True)
     parser.add_argument("--force", action="store_true", help="Recompute even if cached")
-    parser.add_argument("--max-workers", type=int, default=DEFAULT_MAX_WORKERS, help="Max worker processes")
+    parser.add_argument(
+        "--max-workers",
+        type=int,
+        default=DEFAULT_MAX_WORKERS,
+        help="Max worker processes",
+    )
     return parser.parse_args()
 
 
 if __name__ == "__main__":
     logging.basicConfig(
-        level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s"
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(message)s",
     )
 
     args = parse_args()

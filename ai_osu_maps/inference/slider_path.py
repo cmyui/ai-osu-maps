@@ -3,7 +3,10 @@ import logging
 import numpy as np
 from numpy.linalg import norm
 
-from .path_approximator import approximate_bezier, approximate_circular_arc, approximate_catmull, approximate_linear
+from .path_approximator import approximate_bezier
+from .path_approximator import approximate_catmull
+from .path_approximator import approximate_circular_arc
+from .path_approximator import approximate_linear
 
 
 def binary_search(array, target):

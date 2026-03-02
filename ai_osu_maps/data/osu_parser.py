@@ -5,18 +5,23 @@ from datetime import timedelta
 
 import numpy as np
 import numpy.typing as npt
-from slider import Beatmap, Circle, Slider, Spinner
-from slider.curve import Linear, Catmull, Perfect, MultiBezier
+from slider import Beatmap
+from slider import Circle
+from slider import Slider
+from slider import Spinner
+from slider.curve import Catmull
+from slider.curve import Linear
+from slider.curve import MultiBezier
+from slider.curve import Perfect
 
-from ai_osu_maps.data.event import Event, EventType
-from ai_osu_maps.data.tokenizer import (
-    POSITION_PRECISION,
-    X_MIN,
-    X_MAX,
-    Y_MIN,
-    Y_MAX,
-    Tokenizer,
-)
+from ai_osu_maps.data.event import Event
+from ai_osu_maps.data.event import EventType
+from ai_osu_maps.data.tokenizer import POSITION_PRECISION
+from ai_osu_maps.data.tokenizer import X_MAX
+from ai_osu_maps.data.tokenizer import X_MIN
+from ai_osu_maps.data.tokenizer import Y_MAX
+from ai_osu_maps.data.tokenizer import Y_MIN
+from ai_osu_maps.data.tokenizer import Tokenizer
 
 DIST_MIN = 0
 DIST_MAX = 640
@@ -108,8 +113,14 @@ def _add_hitsound_event(
     if not isinstance(addition, str):
         addition = "0:0"
     addition_split = addition.split(":")
-    sample_set = int(addition_split[0]) if addition_split[0] not in ("", "0") else tp_sample_set
-    addition_set = int(addition_split[1]) if len(addition_split) > 1 and addition_split[1] not in ("", "0") else sample_set
+    sample_set = (
+        int(addition_split[0]) if addition_split[0] not in ("", "0") else tp_sample_set
+    )
+    addition_set = (
+        int(addition_split[1])
+        if len(addition_split) > 1 and addition_split[1] not in ("", "0")
+        else sample_set
+    )
     volume = (
         int(addition_split[3])
         if len(addition_split) > 3 and addition_split[3] not in ("", "0")
@@ -148,7 +159,7 @@ def _add_position_event(
     x_count = X_MAX // POSITION_PRECISION - X_MIN // POSITION_PRECISION + 1
     pos_value = int(
         (gx - X_MIN // POSITION_PRECISION)
-        + (gy - Y_MIN // POSITION_PRECISION) * x_count
+        + (gy - Y_MIN // POSITION_PRECISION) * x_count,
     )
     events.append(Event(EventType.POS, pos_value))
     event_times.append(time_ms)
@@ -187,7 +198,13 @@ def _add_group(
     if hitsound_ref_times is not None:
         for i, ref_time in enumerate(hitsound_ref_times):
             _add_hitsound_event(
-                ref_time, time_ms, hitsounds[i], additions[i], beatmap, events, event_times
+                ref_time,
+                time_ms,
+                hitsounds[i],
+                additions[i],
+                beatmap,
+                events,
+                event_times,
             )
 
     events.append(event)
@@ -242,16 +259,14 @@ def _parse_slider(
         hitsound_ref_times=[slider.time],
         hitsounds=[slider.edge_sounds[0] if len(slider.edge_sounds) > 0 else 0],
         additions=[
-            slider.edge_additions[0] if len(slider.edge_additions) > 0 else "0:0"
+            slider.edge_additions[0] if len(slider.edge_additions) > 0 else "0:0",
         ],
     )
 
     duration: timedelta = (slider.end_time - slider.time) / slider.repeat
     control_point_count = len(slider.curve.points)
 
-    def add_anchor(
-        event_type: EventType, i: int, last_pos: npt.NDArray
-    ) -> npt.NDArray:
+    def add_anchor(event_type: EventType, i: int, last_pos: npt.NDArray) -> npt.NDArray:
         return _add_group(
             event_type,
             slider.time + i / (control_point_count - 1) * duration,
@@ -289,10 +304,7 @@ def _parse_slider(
         pos=np.array(slider.curve.points[-1]),
         last_pos=last_pos,
         hitsound_ref_times=[slider.time + timedelta(milliseconds=1)]
-        + [
-            slider.time + i * duration
-            for i in range(1, slider.repeat)
-        ],
+        + [slider.time + i * duration for i in range(1, slider.repeat)],
         hitsounds=[slider.hitsound]
         + [
             slider.edge_sounds[i] if len(slider.edge_sounds) > i else 0
@@ -322,7 +334,7 @@ def _parse_slider(
         hitsound_ref_times=[slider.end_time],
         hitsounds=[slider.edge_sounds[-1] if len(slider.edge_sounds) > 0 else 0],
         additions=[
-            slider.edge_additions[-1] if len(slider.edge_additions) > 0 else "0:0"
+            slider.edge_additions[-1] if len(slider.edge_additions) > 0 else "0:0",
         ],
     )
 

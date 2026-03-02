@@ -53,7 +53,8 @@ class AudioEncoder(nn.Module):
         """
         if waveform_1d.shape[0] < MERT_SAMPLE_RATE:
             waveform_1d = F.pad(
-                waveform_1d, (0, MERT_SAMPLE_RATE - waveform_1d.shape[0])
+                waveform_1d,
+                (0, MERT_SAMPLE_RATE - waveform_1d.shape[0]),
             )
 
         T_samples = waveform_1d.shape[0]
@@ -84,7 +85,7 @@ class AudioEncoder(nn.Module):
         indices = torch.linspace(0, T, self.max_frames + 1, dtype=torch.long)
         pooled = []
         for i in range(self.max_frames):
-            pooled.append(features[indices[i]:indices[i + 1]].mean(dim=0))
+            pooled.append(features[indices[i] : indices[i + 1]].mean(dim=0))
         return torch.stack(pooled, dim=0)
 
     def _encode_single(self, waveform_1d: torch.Tensor) -> torch.Tensor:
@@ -107,7 +108,10 @@ class AudioEncoder(nn.Module):
         return self._pool_to_fixed_length(projected)
 
     def encode_batch(
-        self, waveforms: list[torch.Tensor], *, chunk_batch_size: int = 8
+        self,
+        waveforms: list[torch.Tensor],
+        *,
+        chunk_batch_size: int = 8,
     ) -> list[torch.Tensor]:
         """Encode multiple waveforms with batched MERT chunk processing.
 

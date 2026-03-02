@@ -14,8 +14,10 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data import DataLoader
 from torch.utils.data.distributed import DistributedSampler
 
-from ai_osu_maps.config import ModelConfig, TrainingConfig
-from ai_osu_maps.data.dataset import BeatmapDataset, collate_fn
+from ai_osu_maps.config import ModelConfig
+from ai_osu_maps.config import TrainingConfig
+from ai_osu_maps.data.dataset import BeatmapDataset
+from ai_osu_maps.data.dataset import collate_fn
 from ai_osu_maps.data.tokenizer import Tokenizer
 from ai_osu_maps.model.transformer import Transformer
 
@@ -53,7 +55,7 @@ def _unwrap_model(model: nn.Module) -> nn.Module:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Train autoregressive beatmap generator"
+        description="Train autoregressive beatmap generator",
     )
     parser.add_argument("--dataset-dir", type=str, default="dataset")
     parser.add_argument("--batch-size", type=int, default=None)
@@ -61,7 +63,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-epochs", type=int, default=None)
     parser.add_argument("--checkpoint-dir", type=str, default="checkpoints")
     parser.add_argument(
-        "--resume", type=str, default=None, help="Path to checkpoint to resume from"
+        "--resume",
+        type=str,
+        default=None,
+        help="Path to checkpoint to resume from",
     )
     parser.add_argument("--device", type=str, default=None)
     parser.add_argument("--wandb-project", type=str, default=None)
@@ -70,17 +75,28 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--warmup-steps", type=int, default=None)
     parser.add_argument("--gradient-accumulation-steps", type=int, default=None)
     parser.add_argument("--log-every", type=int, default=None)
-    parser.add_argument("--save-every", type=int, default=None, help="Save checkpoint every N epochs")
     parser.add_argument(
-        "--max-maps", type=int, default=None,
+        "--save-every",
+        type=int,
+        default=None,
+        help="Save checkpoint every N epochs",
+    )
+    parser.add_argument(
+        "--max-maps",
+        type=int,
+        default=None,
         help="Limit number of song directories to use",
     )
     parser.add_argument(
-        "--keep-checkpoints", type=int, default=0,
+        "--keep-checkpoints",
+        type=int,
+        default=0,
         help="Number of most recent checkpoints to keep (0 = keep all)",
     )
     parser.add_argument(
-        "--window-sec", type=float, default=None,
+        "--window-sec",
+        type=float,
+        default=None,
         help="Train on random time windows of this duration (seconds). "
         "Slices both tokens and audio features to the window.",
     )
@@ -103,7 +119,10 @@ def update_ema(ema_model: nn.Module, model: nn.Module, decay: float) -> None:
 
 
 def cosine_warmup_schedule(
-    step: int, warmup_steps: int, total_steps: int, min_lr_ratio: float
+    step: int,
+    warmup_steps: int,
+    total_steps: int,
+    min_lr_ratio: float,
 ) -> float:
     if step < warmup_steps:
         return step / max(warmup_steps, 1)
@@ -210,9 +229,8 @@ def build_token_weight_mask(
     pos_start, pos_end = _range(EventType.POS)
     dist_start, dist_end = _range(EventType.DISTANCE)
 
-    is_position = (
-        ((token_ids >= pos_start) & (token_ids <= pos_end))
-        | ((token_ids >= dist_start) & (token_ids <= dist_end))
+    is_position = ((token_ids >= pos_start) & (token_ids <= pos_end)) | (
+        (token_ids >= dist_start) & (token_ids <= dist_end)
     )
     weights[is_position] = position_weight
 
@@ -259,7 +277,12 @@ def train(args: argparse.Namespace) -> None:
         level=logging.INFO if is_main else logging.WARNING,
         format="%(asctime)s %(levelname)s %(message)s",
     )
-    logger.info("Using device: %s (rank %d/%d)", device, rank, int(os.environ.get("WORLD_SIZE", "1")))
+    logger.info(
+        "Using device: %s (rank %d/%d)",
+        device,
+        rank,
+        int(os.environ.get("WORLD_SIZE", "1")),
+    )
 
     # wandb (rank 0 only)
     wandb_run = None
@@ -277,7 +300,9 @@ def train(args: argparse.Namespace) -> None:
     audio_encoder_path = Path(args.dataset_dir) / "audio_encoder.pt"
     if audio_encoder_path.exists():
         audio_encoder_state = torch.load(
-            audio_encoder_path, map_location="cpu", weights_only=True,
+            audio_encoder_path,
+            map_location="cpu",
+            weights_only=True,
         )
         logger.info("Loaded audio encoder state from %s", audio_encoder_path)
     else:
@@ -415,18 +440,20 @@ def train(args: argparse.Namespace) -> None:
 
             # Per-condition dropout for CFG
             drop_mask = {
-                key: torch.rand(batch_size, device=device) < training_config.cond_dropout
+                key: torch.rand(batch_size, device=device)
+                < training_config.cond_dropout
                 for key in ("difficulty", "cs", "ar", "od", "hp", "mapper", "year")
             }
 
-            is_accum_step = (
-                (batch_idx + 1) % accum_steps != 0
-                and (batch_idx + 1) != len(dataloader)
-            )
+            is_accum_step = (batch_idx + 1) % accum_steps != 0 and (
+                batch_idx + 1
+            ) != len(dataloader)
 
             with _maybe_no_sync(model, skip_sync=is_accum_step):
                 with torch.amp.autocast(
-                    device.type, dtype=autocast_dtype, enabled=use_autocast
+                    device.type,
+                    dtype=autocast_dtype,
+                    enabled=use_autocast,
                 ):
                     logits, log_count_pred = model(
                         input_ids,
@@ -467,13 +494,16 @@ def train(args: argparse.Namespace) -> None:
                     log_target = torch.log(num_objects.float().clamp(min=1))
                     count_loss = nn.functional.l1_loss(log_count_pred, log_target)
 
-                    loss = (main_loss + training_config.count_loss_weight * count_loss) / accum_steps
+                    loss = (
+                        main_loss + training_config.count_loss_weight * count_loss
+                    ) / accum_steps
 
                 loss.backward()
 
             if not is_accum_step:
                 torch.nn.utils.clip_grad_norm_(
-                    model.parameters(), training_config.gradient_clip_norm
+                    model.parameters(),
+                    training_config.gradient_clip_norm,
                 )
 
                 # LR schedule
@@ -495,7 +525,11 @@ def train(args: argparse.Namespace) -> None:
             epoch_loss += loss.item() * accum_steps
             epoch_steps += 1
 
-            if is_main and global_step % training_config.log_every == 0 and not is_accum_step:
+            if (
+                is_main
+                and global_step % training_config.log_every == 0
+                and not is_accum_step
+            ):
                 avg_loss = epoch_loss / epoch_steps
                 current_lr = optimizer.param_groups[0]["lr"]
                 logger.info(
@@ -539,7 +573,8 @@ def train(args: argparse.Namespace) -> None:
             )
             if args.keep_checkpoints > 0:
                 cleanup_old_checkpoints(
-                    Path(training_config.checkpoint_dir), args.keep_checkpoints
+                    Path(training_config.checkpoint_dir),
+                    args.keep_checkpoints,
                 )
 
     if distributed:

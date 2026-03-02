@@ -40,7 +40,7 @@ def approximate_b_spline(control_points: np.ndarray, p: int = 0) -> np.ndarray:
             sub_bezier[p] = points[i + 1]
             to_flatten.append(sub_bezier)
 
-        to_flatten.append(points[(n - p):])
+        to_flatten.append(points[(n - p) :])
         to_flatten.reverse()
     else:
         p = n
@@ -180,11 +180,11 @@ def bezier_is_flat_enough(control_points: np.ndarray) -> bool:
 
 
 def bezier_subdivide(
-        control_points: np.ndarray,
-        left: np.ndarray,
-        right: np.ndarray,
-        subdivision_buffer: np.ndarray,
-        count: int,
+    control_points: np.ndarray,
+    left: np.ndarray,
+    right: np.ndarray,
+    subdivision_buffer: np.ndarray,
+    count: int,
 ) -> None:
     midpoints = subdivision_buffer
 
@@ -200,11 +200,11 @@ def bezier_subdivide(
 
 
 def bezier_approximate(
-        control_points: np.ndarray,
-        output: list[np.ndarray],
-        subdivision_buffer1: np.ndarray,
-        subdivision_buffer2: np.ndarray,
-        count: int,
+    control_points: np.ndarray,
+    output: list[np.ndarray],
+    subdivision_buffer1: np.ndarray,
+    subdivision_buffer2: np.ndarray,
+    count: int,
 ) -> None:
     left = subdivision_buffer2
     right = subdivision_buffer1
@@ -223,11 +223,11 @@ def bezier_approximate(
 
 
 def catmull_find_point(
-        vec1: np.ndarray,
-        vec2: np.ndarray,
-        vec3: np.ndarray,
-        vec4: np.ndarray,
-        t: float,
+    vec1: np.ndarray,
+    vec2: np.ndarray,
+    vec3: np.ndarray,
+    vec4: np.ndarray,
+    t: float,
 ) -> np.ndarray:
     t2 = t * t
     t3 = t * t2
@@ -236,17 +236,17 @@ def catmull_find_point(
         [
             0.5
             * (
-                    2 * vec2[0]
-                    + (-vec1[0] + vec3[0]) * t
-                    + (2 * vec1[0] - 5 * vec2[0] + 4 * vec3[0] - vec4[0]) * t2
-                    + (-vec1[0] + 3 * vec2[0] - 3 * vec3[0] + vec4[0]) * t3
+                2 * vec2[0]
+                + (-vec1[0] + vec3[0]) * t
+                + (2 * vec1[0] - 5 * vec2[0] + 4 * vec3[0] - vec4[0]) * t2
+                + (-vec1[0] + 3 * vec2[0] - 3 * vec3[0] + vec4[0]) * t3
             ),
             0.5
             * (
-                    2 * vec2[1]
-                    + (-vec1[1] + vec3[1]) * t
-                    + (2 * vec1[1] - 5 * vec2[1] + 4 * vec3[1] - vec4[1]) * t2
-                    + (-vec1[1] + 3 * vec2[1] - 3 * vec3[1] + vec4[1]) * t3
+                2 * vec2[1]
+                + (-vec1[1] + vec3[1]) * t
+                + (2 * vec1[1] - 5 * vec2[1] + 4 * vec3[1] - vec4[1]) * t2
+                + (-vec1[1] + 3 * vec2[1] - 3 * vec3[1] + vec4[1]) * t3
             ),
         ],
     )

@@ -92,11 +92,13 @@ class BeatmapDataset(Dataset):
         song_dir, beatmap_idx = self.samples[idx]
 
         audio_features = torch.load(
-            song_dir / AUDIO_FEATURES_FILENAME, weights_only=True,
+            song_dir / AUDIO_FEATURES_FILENAME,
+            weights_only=True,
         )  # (T_audio, d_model)
 
         beatmaps = torch.load(
-            song_dir / BEATMAP_TOKENS_FILENAME, weights_only=False,
+            song_dir / BEATMAP_TOKENS_FILENAME,
+            weights_only=False,
         )
         bm = beatmaps[beatmap_idx]
 

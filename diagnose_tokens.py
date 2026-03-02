@@ -1,14 +1,13 @@
 """Diagnostic script to check what event types the model generates."""
+
 import sys
 from collections import Counter
 
 import torch
 
-from ai_osu_maps.data.event import EventType
+from ai_osu_maps.config import ModelConfig
 from ai_osu_maps.data.tokenizer import Tokenizer
 from ai_osu_maps.model.transformer import Transformer
-from ai_osu_maps.config import ModelConfig, GenerationConfig
-from ai_osu_maps.inference.sampler import sample_autoregressively
 
 
 def print_token_ranges(tokenizer: Tokenizer) -> None:
@@ -16,7 +15,9 @@ def print_token_ranges(tokenizer: Tokenizer) -> None:
     for er in tokenizer.EVENT_RANGES:
         start = tokenizer.event_start[er.type]
         end = tokenizer.event_end[er.type]
-        print(f"  {er.type.value:20s}: tokens {start:5d} - {end - 1:5d} ({end - start:4d} tokens)")
+        print(
+            f"  {er.type.value:20s}: tokens {start:5d} - {end - 1:5d} ({end - start:4d} tokens)",
+        )
     print(f"  Total vocab: {tokenizer.vocab_size}")
     print()
 
@@ -47,7 +48,9 @@ def load_checkpoint(path: str, device: torch.device) -> tuple[Transformer, Model
 
 
 def main() -> None:
-    checkpoint_path = sys.argv[1] if len(sys.argv) > 1 else "checkpoints/checkpoint_epoch_0004.pt"
+    checkpoint_path = (
+        sys.argv[1] if len(sys.argv) > 1 else "checkpoints/checkpoint_epoch_0004.pt"
+    )
     max_tokens = int(sys.argv[2]) if len(sys.argv) > 2 else 200
     device = torch.device("cpu")
 
@@ -56,7 +59,9 @@ def main() -> None:
 
     print(f"Loading checkpoint: {checkpoint_path}")
     model, model_config = load_checkpoint(checkpoint_path, device)
-    print(f"Model config: d_model={model_config.d_model}, max_seq_len={model_config.max_seq_len}")
+    print(
+        f"Model config: d_model={model_config.d_model}, max_seq_len={model_config.max_seq_len}",
+    )
 
     # Create dummy audio features (zeros) - shape (1, T_audio, d_model)
     audio_features = torch.zeros(1, 64, model_config.d_model, device=device)
@@ -76,15 +81,27 @@ def main() -> None:
     sos_tensor = torch.tensor([[tokenizer.sos_id]], dtype=torch.long, device=device)
     with torch.no_grad():
         logits = model.generate_next_token(
-            sos_tensor, audio_features, difficulty, cs, ar, od, hp,
-            mapper_id, year,
-            audio_mask=audio_mask, text_emb=None,
+            sos_tensor,
+            audio_features,
+            difficulty,
+            cs,
+            ar,
+            od,
+            hp,
+            mapper_id,
+            year,
+            audio_mask=audio_mask,
+            text_emb=None,
         )  # (1, vocab_size)
 
     logits_1d = logits[0]
     print(f"  Logits shape: {logits_1d.shape}")
-    print(f"  Logits min={logits_1d.min().item():.4f}, max={logits_1d.max().item():.4f}, mean={logits_1d.mean().item():.4f}")
-    print(f"  NaN count: {logits_1d.isnan().sum().item()}, Inf count: {logits_1d.isinf().sum().item()}")
+    print(
+        f"  Logits min={logits_1d.min().item():.4f}, max={logits_1d.max().item():.4f}, mean={logits_1d.mean().item():.4f}",
+    )
+    print(
+        f"  NaN count: {logits_1d.isnan().sum().item()}, Inf count: {logits_1d.isinf().sum().item()}",
+    )
 
     # Top-10 predicted tokens
     top_vals, top_ids = logits_1d.topk(10)
@@ -95,20 +112,30 @@ def main() -> None:
             print(f"    token={tid:5d}  logit={val:8.4f}  <{labels[tid]}>")
         else:
             event = tokenizer.decode(tid)
-            print(f"    token={tid:5d}  logit={val:8.4f}  {event.type.value}={event.value}")
+            print(
+                f"    token={tid:5d}  logit={val:8.4f}  {event.type.value}={event.value}",
+            )
 
     # Now do greedy generation (argmax, no sampling issues)
     print(f"\n=== Greedy generation ({max_tokens} tokens) ===")
     generated = [tokenizer.sos_id]
     for step in range(max_tokens):
-        input_ids = generated[-model.max_seq_len:]
+        input_ids = generated[-model.max_seq_len :]
         token_tensor = torch.tensor([input_ids], dtype=torch.long, device=device)
 
         with torch.no_grad():
             step_logits = model.generate_next_token(
-                token_tensor, audio_features, difficulty, cs, ar, od, hp,
-                mapper_id, year,
-                audio_mask=audio_mask, text_emb=None,
+                token_tensor,
+                audio_features,
+                difficulty,
+                cs,
+                ar,
+                od,
+                hp,
+                mapper_id,
+                year,
+                audio_mask=audio_mask,
+                text_emb=None,
             )
 
         # Block PAD and SOS
@@ -162,7 +189,11 @@ def main() -> None:
     print("\n=== First 50 tokens ===")
     for i, token_id in enumerate(token_ids[:50]):
         if token_id in (tokenizer.pad_id, tokenizer.sos_id, tokenizer.eos_id):
-            labels = {tokenizer.pad_id: "PAD", tokenizer.sos_id: "SOS", tokenizer.eos_id: "EOS"}
+            labels = {
+                tokenizer.pad_id: "PAD",
+                tokenizer.sos_id: "SOS",
+                tokenizer.eos_id: "EOS",
+            }
             print(f"  [{i:3d}] token={token_id:5d}  <{labels[token_id]}>")
         else:
             event = tokenizer.decode(token_id)

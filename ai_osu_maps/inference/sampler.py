@@ -8,7 +8,8 @@ from torch import Tensor
 
 from ai_osu_maps.config import GenerationConfig
 from ai_osu_maps.data.event import EventType
-from ai_osu_maps.data.tokenizer import MILLISECONDS_PER_STEP, Tokenizer
+from ai_osu_maps.data.tokenizer import MILLISECONDS_PER_STEP
+from ai_osu_maps.data.tokenizer import Tokenizer
 from ai_osu_maps.model.transformer import Transformer
 
 
@@ -35,7 +36,9 @@ def top_k_top_p_filter(logits: Tensor, top_k: int = 0, top_p: float = 1.0) -> Te
         sorted_indices_to_remove[..., 1:] = sorted_indices_to_remove[..., :-1].clone()
         sorted_indices_to_remove[..., 0] = False
         indices_to_remove = sorted_indices_to_remove.scatter(
-            -1, sorted_indices, sorted_indices_to_remove
+            -1,
+            sorted_indices,
+            sorted_indices_to_remove,
         )
         logits = logits.masked_fill(indices_to_remove, float("-inf"))
 
@@ -144,7 +147,10 @@ def sample_autoregressively(
 
     # Per-token-type temperature
     temp_tensor = build_temperature_tensor(
-        tokenizer, config.temperature, config.timing_temperature, device,
+        tokenizer,
+        config.temperature,
+        config.timing_temperature,
+        device,
     )
 
     # Monotonic time tracking
@@ -163,9 +169,17 @@ def sample_autoregressively(
         if config.cfg_scale > 1.0 and text_emb is not None:
             # CFG: conditioned pass
             logits_cond = model.generate_next_token(
-                token_tensor, audio_features, difficulty, cs, ar, od, hp,
-                mapper_id, year,
-                audio_mask=audio_mask, text_emb=text_emb,
+                token_tensor,
+                audio_features,
+                difficulty,
+                cs,
+                ar,
+                od,
+                hp,
+                mapper_id,
+                year,
+                audio_mask=audio_mask,
+                text_emb=text_emb,
             )
             # Unconditioned pass (drop all conditions)
             uncond_drop_mask = {
@@ -173,20 +187,34 @@ def sample_autoregressively(
                 for key in ("difficulty", "cs", "ar", "od", "hp", "mapper", "year")
             }
             logits_uncond = model.forward(
-                token_tensor, audio_features,
-                torch.zeros_like(difficulty), torch.zeros_like(cs),
-                torch.zeros_like(ar), torch.zeros_like(od), torch.zeros_like(hp),
-                mapper_id, year,
-                audio_mask=audio_mask, text_emb=None,
+                token_tensor,
+                audio_features,
+                torch.zeros_like(difficulty),
+                torch.zeros_like(cs),
+                torch.zeros_like(ar),
+                torch.zeros_like(od),
+                torch.zeros_like(hp),
+                mapper_id,
+                year,
+                audio_mask=audio_mask,
+                text_emb=None,
                 drop_mask=uncond_drop_mask,
             )[:, -1, :]
 
             logits = logits_uncond + config.cfg_scale * (logits_cond - logits_uncond)
         else:
             logits = model.generate_next_token(
-                token_tensor, audio_features, difficulty, cs, ar, od, hp,
-                mapper_id, year,
-                audio_mask=audio_mask, text_emb=text_emb,
+                token_tensor,
+                audio_features,
+                difficulty,
+                cs,
+                ar,
+                od,
+                hp,
+                mapper_id,
+                year,
+                audio_mask=audio_mask,
+                text_emb=text_emb,
             )
 
         # Per-token-type temperature scaling
@@ -195,7 +223,9 @@ def sample_autoregressively(
         # Monotonic time constraint
         if config.monotonic_time:
             logits = apply_monotonic_time_constraint(
-                logits, tokenizer, cumulative_time_steps,
+                logits,
+                tokenizer,
+                cumulative_time_steps,
             )
 
         # Top-k / top-p filtering
@@ -219,11 +249,19 @@ def sample_autoregressively(
         if stream:
             time_ms = cumulative_time_steps * MILLISECONDS_PER_STEP
             if next_token in (tokenizer.pad_id, tokenizer.sos_id, tokenizer.eos_id):
-                label = {tokenizer.pad_id: "PAD", tokenizer.sos_id: "SOS", tokenizer.eos_id: "EOS"}[next_token]
-                sys.stderr.write(f"\r[{len(generated)-1}/{max_tokens} t={time_ms}ms] <{label}>")
+                label = {
+                    tokenizer.pad_id: "PAD",
+                    tokenizer.sos_id: "SOS",
+                    tokenizer.eos_id: "EOS",
+                }[next_token]
+                sys.stderr.write(
+                    f"\r[{len(generated)-1}/{max_tokens} t={time_ms}ms] <{label}>",
+                )
             else:
                 event = tokenizer.decode(next_token)
-                sys.stderr.write(f"\r[{len(generated)-1}/{max_tokens} t={time_ms}ms] {event.type.value}{event.value}")
+                sys.stderr.write(
+                    f"\r[{len(generated)-1}/{max_tokens} t={time_ms}ms] {event.type.value}{event.value}",
+                )
             sys.stderr.flush()
 
         if next_token == tokenizer.eos_id:

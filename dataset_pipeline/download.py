@@ -16,9 +16,10 @@ import logging
 import os
 import time
 import zipfile
-from dataclasses import dataclass, field
+from collections.abc import Callable
+from dataclasses import dataclass
+from dataclasses import field
 from pathlib import Path
-from typing import Callable
 
 import boto3
 import httpx
@@ -120,7 +121,8 @@ def list_random_beatmap_ids_from_s3(limit: int) -> list[int]:
     ids: list[int] = []
     paginator = s3.get_paginator("list_objects_v2")
     for page in paginator.paginate(
-        Bucket=os.environ["AWS_BUCKET_NAME"], Prefix="beatmaps/"
+        Bucket=os.environ["AWS_BUCKET_NAME"],
+        Prefix="beatmaps/",
     ):
         for obj in page.get("Contents", []):
             if obj["Size"] == 0:
@@ -252,7 +254,10 @@ async def _try_mirror(
         try:
             t_req = time.monotonic()
             resp = await client.get(
-                url, timeout=30, follow_redirects=True, headers=headers
+                url,
+                timeout=30,
+                follow_redirects=True,
+                headers=headers,
             )
             req_ms = (time.monotonic() - t_req) * 1000
 
@@ -510,7 +515,9 @@ async def _mirror_worker(
             song_dir = output_dir / str(item.set_id)
             t_ext = time.monotonic()
             ok = await asyncio.to_thread(
-                _extract_osz, content=result, song_dir=song_dir
+                _extract_osz,
+                content=result,
+                song_dir=song_dir,
             )
             ext_ms = (time.monotonic() - t_ext) * 1000
             if ok:
@@ -569,7 +576,7 @@ async def _mirror_worker(
                     overflow_queue.get(),
                     timeout=0.5,
                 )
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 continue
             if overflow_item is None:
                 overflow_queue.put_nowait(None)
@@ -666,7 +673,7 @@ async def download_chunk(
                 route_failure,
                 on_resolved,
                 client,
-            )
+            ),
         )
         for template in OSZ_MIRRORS
     ]
@@ -751,7 +758,9 @@ async def download_all(
 
     if all_failed:
         logger.warning(
-            "Failed to download %d sets: %s", len(all_failed), all_failed[:20]
+            "Failed to download %d sets: %s",
+            len(all_failed),
+            all_failed[:20],
         )
         if len(all_failed) > 20:
             logger.warning("... and %d more", len(all_failed) - 20)
@@ -817,15 +826,23 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Download beatmap sets for training")
     parser.add_argument("--dataset-dir", type=str, default="dataset")
     parser.add_argument(
-        "--offset", type=int, default=0, help="Skip first N beatmap sets"
+        "--offset",
+        type=int,
+        default=0,
+        help="Skip first N beatmap sets",
     )
     parser.add_argument(
-        "--limit", type=int, default=100, help="Max beatmap sets to download"
+        "--limit",
+        type=int,
+        default=100,
+        help="Max beatmap sets to download",
     )
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--debug", action="store_true", help="Enable debug logging")
     parser.add_argument(
-        "--force", action="store_true", help="Re-download even if already extracted"
+        "--force",
+        action="store_true",
+        help="Re-download even if already extracted",
     )
     parser.add_argument("--chunk-size", type=int, default=CHUNK_SIZE)
     parser.add_argument(
@@ -854,5 +871,5 @@ if __name__ == "__main__":
             chunk_size=args.chunk_size,
             dry_run=args.dry_run,
             force=args.force,
-        )
+        ),
     )

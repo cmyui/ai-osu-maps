@@ -51,7 +51,9 @@ def find_audio_file(song_dir: Path) -> Path | None:
 
 def _prefetch_audio(
     work_items: list[tuple[Path, Path, Path]],
-    prefetch_queue: queue.Queue[tuple[Path, Path, torch.Tensor | None, BaseException | None] | None],
+    prefetch_queue: queue.Queue[
+        tuple[Path, Path, torch.Tensor | None, BaseException | None] | None
+    ],
 ) -> None:
     """Load and resample audio files in a background thread."""
     for song_dir, cache_path, audio_path in work_items:
@@ -63,7 +65,13 @@ def _prefetch_audio(
     prefetch_queue.put(None)
 
 
-def run(dataset_dir: str, *, device: str | None = None, force: bool = False, batch_size: int = DEFAULT_BATCH_SIZE) -> None:
+def run(
+    dataset_dir: str,
+    *,
+    device: str | None = None,
+    force: bool = False,
+    batch_size: int = DEFAULT_BATCH_SIZE,
+) -> None:
     """Pre-compute MERT audio features for all songs in the dataset."""
     distributed = _is_distributed()
     rank = _get_rank()
@@ -82,7 +90,7 @@ def run(dataset_dir: str, *, device: str | None = None, force: bool = False, bat
         torch_device = torch.device("cuda", local_rank)
     else:
         torch_device = torch.device(
-            device if device else ("cuda" if torch.cuda.is_available() else "cpu")
+            device if device else ("cuda" if torch.cuda.is_available() else "cpu"),
         )
 
     logger.info("Using device: %s (rank %d/%d)", torch_device, rank, world_size)
@@ -97,7 +105,11 @@ def run(dataset_dir: str, *, device: str | None = None, force: bool = False, bat
     if encoder_state_path.exists() and not force:
         logger.info("Loading saved encoder state from %s", encoder_state_path)
         encoder.load_state_dict(
-            torch.load(encoder_state_path, map_location=torch_device, weights_only=True)
+            torch.load(
+                encoder_state_path,
+                map_location=torch_device,
+                weights_only=True,
+            ),
         )
     else:
         if rank == 0:
@@ -107,7 +119,11 @@ def run(dataset_dir: str, *, device: str | None = None, force: bool = False, bat
             dist.barrier()
             if rank != 0:
                 encoder.load_state_dict(
-                    torch.load(encoder_state_path, map_location=torch_device, weights_only=True)
+                    torch.load(
+                        encoder_state_path,
+                        map_location=torch_device,
+                        weights_only=True,
+                    ),
                 )
 
     song_dirs = sorted(d for d in dataset_path.iterdir() if d.is_dir())
@@ -136,7 +152,11 @@ def run(dataset_dir: str, *, device: str | None = None, force: bool = False, bat
         work_items = work_items[rank::world_size]
         logger.info(
             "Rank %d: processing %d/%d items (cached: %d, no audio: %d)",
-            rank, len(work_items), all_work, cached, skipped,
+            rank,
+            len(work_items),
+            all_work,
+            cached,
+            skipped,
         )
     else:
         logger.info(
@@ -156,7 +176,9 @@ def run(dataset_dir: str, *, device: str | None = None, force: bool = False, bat
         tuple[Path, Path, torch.Tensor | None, BaseException | None] | None
     ] = queue.Queue(maxsize=batch_size)
     prefetch_thread = threading.Thread(
-        target=_prefetch_audio, args=(work_items, prefetch_queue), daemon=True
+        target=_prefetch_audio,
+        args=(work_items, prefetch_queue),
+        daemon=True,
     )
     prefetch_thread.start()
 
@@ -198,9 +220,7 @@ def run(dataset_dir: str, *, device: str | None = None, force: bool = False, bat
                 torch.save(features.cpu(), cache_path)
             done += len(batch)
         except Exception:
-            logger.exception(
-                "Failed to process batch of %d songs", len(batch)
-            )
+            logger.exception("Failed to process batch of %d songs", len(batch))
             failed += len(batch)
 
         if done % 50 < len(batch):
@@ -231,14 +251,25 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--dataset-dir", type=str, required=True)
     parser.add_argument("--device", type=str, default=None)
     parser.add_argument("--force", action="store_true", help="Recompute even if cached")
-    parser.add_argument("--batch-size", type=int, default=DEFAULT_BATCH_SIZE, help="Songs per encoding batch")
+    parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=DEFAULT_BATCH_SIZE,
+        help="Songs per encoding batch",
+    )
     return parser.parse_args()
 
 
 if __name__ == "__main__":
     logging.basicConfig(
-        level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s"
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(message)s",
     )
 
     args = parse_args()
-    run(args.dataset_dir, device=args.device, force=args.force, batch_size=args.batch_size)
+    run(
+        args.dataset_dir,
+        device=args.device,
+        force=args.force,
+        batch_size=args.batch_size,
+    )

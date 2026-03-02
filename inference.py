@@ -4,32 +4,46 @@ import os
 
 import torch
 
-from ai_osu_maps.config import ModelConfig, GenerationConfig
+from ai_osu_maps.config import GenerationConfig
+from ai_osu_maps.config import ModelConfig
 from ai_osu_maps.data.osu_parser import tokens_to_events
 from ai_osu_maps.data.tokenizer import Tokenizer
-from ai_osu_maps.inference.postprocessor import BeatmapConfig, Postprocessor
+from ai_osu_maps.inference.postprocessor import BeatmapConfig
+from ai_osu_maps.inference.postprocessor import Postprocessor
 from ai_osu_maps.inference.sampler import sample_autoregressively
-from ai_osu_maps.model.transformer import Transformer
 from ai_osu_maps.model.audio_encoder import AudioEncoder
+from ai_osu_maps.model.transformer import Transformer
 
 logger = logging.getLogger(__name__)
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Generate osu! beatmaps from audio using autoregressive model"
+        description="Generate osu! beatmaps from audio using autoregressive model",
     )
     parser.add_argument(
-        "--audio-path", type=str, required=True, help="Path to audio file"
+        "--audio-path",
+        type=str,
+        required=True,
+        help="Path to audio file",
     )
     parser.add_argument(
-        "--output-dir", type=str, default="output", help="Output directory"
+        "--output-dir",
+        type=str,
+        default="output",
+        help="Output directory",
     )
     parser.add_argument(
-        "--checkpoint", type=str, required=True, help="Model checkpoint path"
+        "--checkpoint",
+        type=str,
+        required=True,
+        help="Model checkpoint path",
     )
     parser.add_argument(
-        "--prompt", type=str, default=None, help="Text prompt for style"
+        "--prompt",
+        type=str,
+        default=None,
+        help="Text prompt for style",
     )
     parser.add_argument("--difficulty", type=float, default=5.0, help="Star rating")
     parser.add_argument("--cs", type=float, default=4.0, help="Circle size")
@@ -59,10 +73,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--stream", action="store_true", help="Stream tokens to stderr")
     parser.add_argument("--mapper", type=int, default=0, help="Mapper ID (0 = unknown)")
     parser.add_argument(
-        "--year", type=float, default=0.0, help="Year condition (0.0 = unknown)"
+        "--year",
+        type=float,
+        default=0.0,
+        help="Year condition (0.0 = unknown)",
     )
     parser.add_argument(
-        "--no-ema", action="store_true", help="Use trained weights instead of EMA"
+        "--no-ema",
+        action="store_true",
+        help="Use trained weights instead of EMA",
     )
     parser.add_argument(
         "--audio-encoder",
@@ -120,14 +139,17 @@ def generate(args: argparse.Namespace) -> None:
     device = torch.device(args.device or _default_device())
 
     logging.basicConfig(
-        level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s"
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(message)s",
     )
     logger.info("Using device: %s", device)
 
     # Load model
     logger.info("Loading checkpoint: %s", args.checkpoint)
     model, model_config, audio_encoder_state = load_checkpoint(
-        args.checkpoint, device, use_ema=not args.no_ema
+        args.checkpoint,
+        device,
+        use_ema=not args.no_ema,
     )
 
     # Tokenizer
@@ -146,7 +168,7 @@ def generate(args: argparse.Namespace) -> None:
     else:
         logger.warning(
             "No audio encoder state in checkpoint - using random projection "
-            "(features will not match training data)"
+            "(features will not match training data)",
         )
     audio_encoder.eval()
     waveform = AudioEncoder.load_audio(args.audio_path).to(device)

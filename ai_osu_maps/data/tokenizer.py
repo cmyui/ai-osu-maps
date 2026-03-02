@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from ai_osu_maps.data.event import Event, EventRange, EventType
+from ai_osu_maps.data.event import Event
+from ai_osu_maps.data.event import EventRange
+from ai_osu_maps.data.event import EventType
 
 MILLISECONDS_PER_STEP = 10
 
@@ -81,7 +83,7 @@ class Tokenizer:
         if not er.min_value <= event.value <= er.max_value:
             raise ValueError(
                 f"event value {event.value} is not within range "
-                f"[{er.min_value}, {er.max_value}] for event type {event.type}"
+                f"[{er.min_value}, {er.max_value}] for event type {event.type}",
             )
 
         return offset + event.value - er.min_value
