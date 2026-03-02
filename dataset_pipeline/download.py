@@ -40,6 +40,9 @@ CHUNK_SIZE = 200
 MAX_RETRIES = 3
 RETRY_BACKOFF = 2.0
 RETRYABLE_STATUSES = {429, 425, 500, 502, 503}
+NON_RETRYABLE_MIRROR_STATUSES: dict[str, set[int]] = {
+    "storage.ripple.moe": {500},
+}
 
 MINO_RATELIMIT_KEY = "REDACTED"
 
@@ -301,6 +304,15 @@ async def _try_mirror(
                 )
                 await asyncio.sleep(delay)
                 continue
+
+            non_retryable = NON_RETRYABLE_MIRROR_STATUSES.get(mirror_host)
+            if non_retryable and resp.status_code in non_retryable:
+                _record_mirror_stat(mirror_host, "error")
+                logger.warning(
+                    "Set %d: HTTP %d from %s (non-retryable)",
+                    beatmapset_id, resp.status_code, mirror_host,
+                )
+                return MirrorFailure.ERROR
 
             if resp.status_code in RETRYABLE_STATUSES:
                 _record_mirror_stat(mirror_host, "error")
