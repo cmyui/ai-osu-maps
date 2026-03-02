@@ -62,15 +62,15 @@ This project depends on a [fork of slider](https://github.com/cmyui/slider) (an 
 
 ### Beatmapset ID list
 
-The download pipeline needs a list of beatmapset IDs. Provide a TSV file with `beatmapset_id` in the first column:
+The download pipeline needs a list of beatmapset IDs as a TSV file with `beatmapset_id` in the first column (additional columns are ignored):
 
 ```tsv
-beatmapset_id	title	artist
-1	Kenji Ninuma - DISCO PRINCE	Kenji Ninuma
-3	Ni-Ni - 1,2,3,4, 007 [Waku Waku Mix]	Ni-Ni
+1073074	40883
+1495669	36973
+765778	32131
 ```
 
-Additional columns are ignored. You can source these from the [osu! API](https://osu.ppy.sh/docs/index.html), community databases, or curate your own list.
+A sample `top_beatmapsets.tsv` is included in the repo, containing the most popular beatmapsets from [Akatsuki](https://akatsuki.gg)'s vanilla osu! leaderboards. You can use it directly or supply your own list sourced from the [osu! API](https://osu.ppy.sh/docs/index.html) or community databases.
 
 ### Generate dataset (unified)
 
@@ -83,6 +83,7 @@ python generate_dataset.py \
 ```
 
 This runs all three preparation stages sequentially:
+
 1. **Download** — fetches .osz archives from mirror sites, extracts audio + .osu files
 2. **Precompute audio** — runs MERT on each song's audio, saves `audio_features.pt` per directory
 3. **Precompute tokens** — parses .osu files into tokenized beatmaps, saves `beatmap_tokens.pt` per directory
@@ -100,6 +101,7 @@ Options:
 | `--chunk_size` | Download batch size (default: 200) |
 
 Individual stages can also be run standalone:
+
 ```bash
 python -m dataset_pipeline.download --dataset_dir dataset --set_ids_file top_beatmapsets.tsv --limit 10000
 
@@ -130,6 +132,7 @@ torchrun --nproc_per_node=2 train.py \
 ```
 
 Key features:
+
 - Multi-GPU via `torchrun` (DDP with NCCL backend)
 - Teacher forcing with weighted cross-entropy (rhythm 3x, objects 2x, position 1.5x)
 - Auxiliary object count predictor head (log-space L1 loss)
@@ -137,12 +140,12 @@ Key features:
 - EMA weights (0.9999 decay)
 - Checkpoints saved every epoch to `checkpoints/`
 
-| Flag | Description |
-|------|-------------|
-| `--window_sec N` | Train on random N-second windows (requires re-running `precompute_tokens --force`) |
-| `--max_maps N` | Limit song directories (useful for quick experiments) |
-| `--resume PATH` | Resume from a checkpoint |
-| `--wandb_project NAME` | Enable wandb logging |
+| Flag                   | Description                                                                        |
+| ---------------------- | ---------------------------------------------------------------------------------- |
+| `--window_sec N`       | Train on random N-second windows (requires re-running `precompute_tokens --force`) |
+| `--max_maps N`         | Limit song directories (useful for quick experiments)                              |
+| `--resume PATH`        | Resume from a checkpoint                                                           |
+| `--wandb_project NAME` | Enable wandb logging                                                               |
 
 ## Inference
 
@@ -159,17 +162,17 @@ python inference.py \
   --device cuda
 ```
 
-| Flag | Description |
-|------|-------------|
-| `--osz` | Bundle output as .osz (includes audio file) |
-| `--stream` | Print tokens to stderr as they're generated |
-| `--prompt "text"` | Optional text conditioning for style |
-| `--cfg_scale 2.0` | Classifier-free guidance scale (with text prompt) |
-| `--temperature` | Sampling temperature for most tokens |
+| Flag                   | Description                                                             |
+| ---------------------- | ----------------------------------------------------------------------- |
+| `--osz`                | Bundle output as .osz (includes audio file)                             |
+| `--stream`             | Print tokens to stderr as they're generated                             |
+| `--prompt "text"`      | Optional text conditioning for style                                    |
+| `--cfg_scale 2.0`      | Classifier-free guidance scale (with text prompt)                       |
+| `--temperature`        | Sampling temperature for most tokens                                    |
 | `--timing_temperature` | Near-greedy temperature for timing tokens (BEAT, MEASURE, TIMING_POINT) |
-| `--no_monotonic_time` | Allow backward time jumps (disabled by default) |
-| `--mapper N` | Mapper ID for style conditioning (0 = unknown) |
-| `--no_ema` | Use trained weights instead of EMA |
+| `--no_monotonic_time`  | Allow backward time jumps (disabled by default)                         |
+| `--mapper N`           | Mapper ID for style conditioning (0 = unknown)                          |
+| `--no_ema`             | Use trained weights instead of EMA                                      |
 
 ## Audio encoder state consistency
 
