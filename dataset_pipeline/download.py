@@ -23,7 +23,9 @@ logger = logging.getLogger(__name__)
 BEATMAPS_API = "https://beatmaps.akatsuki.gg"
 OSZ_MIRRORS = [
     # "https://catboy.best/d/{set_id}",  # down as of 2026-03-01
+    "https://api.nerinyan.moe/d/{set_id}",
     "https://osu.direct/api/d/{set_id}",
+    "https://dl.sayobot.cn/beatmaps/download/full/{set_id}",
     "https://storage.ripple.moe/d/{set_id}",
 ]
 AUDIO_EXTENSIONS = {".mp3", ".ogg", ".wav", ".flac"}
@@ -41,7 +43,9 @@ MINO_RATELIMIT_KEY = "REDACTED"
 
 MIRROR_CONCURRENCY = {
     # "catboy.best": 2,
+    "api.nerinyan.moe": 2,
     "osu.direct": 2,
+    "dl.sayobot.cn": 2,
     "storage.ripple.moe": 1,
 }
 
