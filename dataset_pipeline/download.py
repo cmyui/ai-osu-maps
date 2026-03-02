@@ -43,9 +43,9 @@ MINO_RATELIMIT_KEY = "REDACTED"
 
 MIRROR_CONCURRENCY = {
     # "catboy.best": 2,
-    "api.nerinyan.moe": 2,
-    "osu.direct": 2,
-    "dl.sayobot.cn": 2,
+    "api.nerinyan.moe": 1,
+    "osu.direct": 1,
+    "dl.sayobot.cn": 1,
     "storage.ripple.moe": 1,
 }
 
@@ -423,7 +423,7 @@ async def download_and_extract(
     return await asyncio.to_thread(_extract_osz, content, song_dir)
 
 
-MAX_CONCURRENT_DOWNLOADS_PER_CHUNK = 4
+MAX_CONCURRENT_DOWNLOADS_PER_CHUNK = 8
 
 
 async def download_chunk(
