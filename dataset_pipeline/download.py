@@ -255,7 +255,7 @@ async def _try_mirror(
             t_req = time.monotonic()
             resp = await client.get(
                 url,
-                timeout=30,
+                timeout=10,
                 follow_redirects=True,
                 headers=headers,
             )
