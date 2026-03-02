@@ -51,7 +51,7 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="TSV file with beatmapset_id in first column (skips S3/Cheesegull)",
     )
-    parser.add_argument("--offset", type=int, default=0, help="Skip first N beatmap sets")
+    parser.add_argument("--download-offset", type=int, default=0, help="Skip first N beatmap sets")
     parser.add_argument(
         "--limit", type=int, default=100, help="Max beatmap sets to download"
     )
@@ -136,7 +136,7 @@ def main() -> None:
                 download.run(
                     args.dataset_dir,
                     set_ids_file=args.set_ids_file,
-                    offset=args.offset,
+                    offset=args.download_offset,
                     limit=args.limit,
                     chunk_size=args.download_chunk_size,
                     dry_run=args.dry_run,
