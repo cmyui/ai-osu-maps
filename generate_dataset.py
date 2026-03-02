@@ -60,6 +60,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--dry-run", action="store_true", help="List downloads without fetching"
     )
+    parser.add_argument(
+        "--force-download",
+        action="store_true",
+        help="Re-download even if already extracted",
+    )
 
     # Audio precompute stage
     parser.add_argument(
@@ -125,6 +130,7 @@ def main() -> None:
     if not args.skip_download:
         if rank == 0:
             logger.info("=== Stage 1/3: Downloading beatmapsets ===")
+            force_download = args.force or args.force_download
             asyncio.run(
                 download.run(
                     args.dataset_dir,
@@ -132,6 +138,7 @@ def main() -> None:
                     limit=args.limit,
                     chunk_size=args.download_chunk_size,
                     dry_run=args.dry_run,
+                    force=force_download,
                 )
             )
         if distributed:
@@ -143,8 +150,8 @@ def main() -> None:
             return
 
     if not args.skip_audio:
-        force_audio = args.force or args.force_audio
         logger.info("=== Stage 2/3: Precomputing audio features ===")
+        force_audio = args.force or args.force_audio
         precompute_audio.run(
             args.dataset_dir,
             device=args.device,
@@ -156,8 +163,8 @@ def main() -> None:
 
     if not args.skip_tokens:
         if rank == 0:
-            force_tokens = args.force or args.force_tokens
             logger.info("=== Stage 3/3: Precomputing beatmap tokens ===")
+            force_tokens = args.force or args.force_tokens
             precompute_tokens.run(
                 args.dataset_dir,
                 force=force_tokens,

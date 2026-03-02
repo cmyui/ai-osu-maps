@@ -12,7 +12,6 @@ import asyncio
 import io
 import logging
 import os
-import shutil
 import zipfile
 from pathlib import Path
 
@@ -403,10 +402,12 @@ async def download_and_extract(
     beatmapset_id: int,
     output_dir: Path,
     client: httpx.AsyncClient,
+    *,
+    force: bool = False,
 ) -> bool:
     """Download .osz and extract audio + .osu files."""
     song_dir = output_dir / str(beatmapset_id)
-    if song_dir.exists() and any(song_dir.glob("*.osu")):
+    if not force and song_dir.exists() and any(song_dir.glob("*.osu")):
         return True
 
     content = await _download_osz(beatmapset_id, client)
@@ -425,13 +426,15 @@ async def download_chunk(
     set_ids: list[int],
     output_dir: Path,
     client: httpx.AsyncClient,
+    *,
+    force: bool = False,
 ) -> tuple[int, list[int]]:
     """Download a chunk of beatmap sets. Returns (success_count, failed_ids)."""
     download_sem = asyncio.Semaphore(MAX_CONCURRENT_DOWNLOADS_PER_CHUNK)
 
     async def _limited_download(sid: int) -> tuple[int, bool]:
         async with download_sem:
-            result = await download_and_extract(sid, output_dir, client)
+            result = await download_and_extract(sid, output_dir, client, force=force)
             return sid, result
 
     tasks = [asyncio.create_task(_limited_download(sid)) for sid in set_ids]
@@ -452,6 +455,8 @@ async def download_all(
     set_ids: list[int],
     output_dir: Path,
     chunk_size: int,
+    *,
+    force: bool = False,
 ) -> int:
     """Download all beatmap sets in chunks to avoid overwhelming mirrors."""
     total_success = 0
@@ -464,13 +469,17 @@ async def download_all(
             total_chunks = (len(set_ids) + chunk_size - 1) // chunk_size
 
             # Count how many in this chunk are already cached
-            to_download = [
-                sid
-                for sid in chunk
-                if not (output_dir / str(sid)).exists()
-                or not any((output_dir / str(sid)).glob("*.osu"))
-            ]
-            cached = len(chunk) - len(to_download)
+            if force:
+                to_download = chunk
+                cached = 0
+            else:
+                to_download = [
+                    sid
+                    for sid in chunk
+                    if not (output_dir / str(sid)).exists()
+                    or not any((output_dir / str(sid)).glob("*.osu"))
+                ]
+                cached = len(chunk) - len(to_download)
 
             logger.info(
                 "Chunk %d/%d: %d sets (%d cached, %d to download)",
@@ -482,7 +491,7 @@ async def download_all(
             )
 
             _reset_mirror_stats()
-            success, failed = await download_chunk(chunk, output_dir, client)
+            success, failed = await download_chunk(chunk, output_dir, client, force=force)
             total_success += success
             all_failed.extend(failed)
 
@@ -520,6 +529,7 @@ async def run(
     limit: int = 100,
     chunk_size: int = CHUNK_SIZE,
     dry_run: bool = False,
+    force: bool = False,
 ) -> None:
     """Download beatmap sets into the dataset directory."""
     _load_dotenv(Path(__file__).resolve().parent.parent / ".env")
@@ -553,7 +563,7 @@ async def run(
             logger.info("[dry run] Would download set %d", sid)
         return
 
-    success = await download_all(sets_to_download, output_dir, chunk_size)
+    success = await download_all(sets_to_download, output_dir, chunk_size, force=force)
     logger.info(
         "Done. Downloaded %d/%d beatmap sets to %s",
         success,
@@ -569,6 +579,7 @@ def parse_args() -> argparse.Namespace:
         "--limit", type=int, default=100, help="Max beatmap sets to download"
     )
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--force", action="store_true", help="Re-download even if already extracted")
     parser.add_argument("--chunk-size", type=int, default=CHUNK_SIZE)
     parser.add_argument(
         "--set-ids-file",
@@ -594,5 +605,6 @@ if __name__ == "__main__":
             limit=args.limit,
             chunk_size=args.chunk_size,
             dry_run=args.dry_run,
+            force=args.force,
         )
     )
