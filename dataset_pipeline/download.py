@@ -44,7 +44,7 @@ NON_RETRYABLE_MIRROR_STATUSES: dict[str, set[int]] = {
     "storage.ripple.moe": {500},
 }
 
-MINO_RATELIMIT_KEY = "REDACTED"
+MINO_RATELIMIT_KEY = os.getenv("MINO_RATELIMIT_KEY")
 
 MIRROR_RATE: dict[str, float] = {
     # "catboy.best": 1.5,
@@ -65,7 +65,11 @@ MIRROR_WEIGHT = {
 }
 
 MIRROR_EXTRA_HEADERS: dict[str, dict[str, str]] = {
-    # "catboy.best": {"x-ratelimit-key": MINO_RATELIMIT_KEY},
+    **(
+        {"catboy.best": {"x-ratelimit-key": MINO_RATELIMIT_KEY}}
+        if MINO_RATELIMIT_KEY is not None
+        else {}
+    ),
 }
 
 
@@ -240,7 +244,9 @@ async def _try_mirror(
         if wait_ms > 50:
             logger.debug(
                 "Set %d: %s rate limit wait %.0fms",
-                beatmapset_id, mirror_host, wait_ms,
+                beatmapset_id,
+                mirror_host,
+                wait_ms,
             )
         try:
             t_req = time.monotonic()
@@ -264,7 +270,9 @@ async def _try_mirror(
                 _record_mirror_stat(mirror_host, "success")
                 logger.debug(
                     "Set %d: %s ok %.0fms (%d KB)",
-                    beatmapset_id, mirror_host, req_ms,
+                    beatmapset_id,
+                    mirror_host,
+                    req_ms,
                     len(resp.content) // 1024,
                 )
                 remaining = resp.headers.get("x-ratelimit-remaining")
@@ -281,7 +289,9 @@ async def _try_mirror(
                 _record_mirror_stat(mirror_host, "not_found")
                 logger.debug(
                     "Set %d: %s 404 %.0fms",
-                    beatmapset_id, mirror_host, req_ms,
+                    beatmapset_id,
+                    mirror_host,
+                    req_ms,
                 )
                 return MirrorFailure.NOT_FOUND
 
@@ -310,7 +320,9 @@ async def _try_mirror(
                 _record_mirror_stat(mirror_host, "error")
                 logger.warning(
                     "Set %d: HTTP %d from %s (non-retryable)",
-                    beatmapset_id, resp.status_code, mirror_host,
+                    beatmapset_id,
+                    resp.status_code,
+                    mirror_host,
                 )
                 return MirrorFailure.ERROR
 
@@ -484,7 +496,10 @@ async def _mirror_worker(
             return
 
         logger.debug(
-            "Set %d: %s starting (source=%s)", item.set_id, mirror_host, source,
+            "Set %d: %s starting (source=%s)",
+            item.set_id,
+            mirror_host,
+            source,
         )
         t0 = time.monotonic()
         result = await _try_mirror(item.set_id, mirror_template, client)
@@ -493,12 +508,17 @@ async def _mirror_worker(
         if isinstance(result, bytes):
             song_dir = output_dir / str(item.set_id)
             t_ext = time.monotonic()
-            ok = await asyncio.to_thread(_extract_osz, content=result, song_dir=song_dir)
+            ok = await asyncio.to_thread(
+                _extract_osz, content=result, song_dir=song_dir
+            )
             ext_ms = (time.monotonic() - t_ext) * 1000
             if ok:
                 logger.debug(
                     "Set %d: %s done dl=%.0fms ext=%.0fms",
-                    item.set_id, mirror_host, dl_ms, ext_ms,
+                    item.set_id,
+                    mirror_host,
+                    dl_ms,
+                    ext_ms,
                 )
                 completed.add(item.set_id)
                 on_resolved()
@@ -509,8 +529,11 @@ async def _mirror_worker(
             if item.ratelimit_retries <= MAX_RATELIMIT_REQUEUES:
                 logger.debug(
                     "Set %d: %s ratelimited %.0fms, re-queuing (%d/%d)",
-                    item.set_id, mirror_host, dl_ms,
-                    item.ratelimit_retries, MAX_RATELIMIT_REQUEUES,
+                    item.set_id,
+                    mirror_host,
+                    dl_ms,
+                    item.ratelimit_retries,
+                    MAX_RATELIMIT_REQUEUES,
                 )
                 base_queue.put_nowait(item)
                 return
@@ -518,7 +541,9 @@ async def _mirror_worker(
 
         logger.debug(
             "Set %d: %s failed %.0fms, routing to next mirror",
-            item.set_id, mirror_host, dl_ms,
+            item.set_id,
+            mirror_host,
+            dl_ms,
         )
         item.tried_mirrors.add(mirror_host)
         route_failure(item)
@@ -540,7 +565,8 @@ async def _mirror_worker(
         else:
             try:
                 overflow_item = await asyncio.wait_for(
-                    overflow_queue.get(), timeout=0.5,
+                    overflow_queue.get(),
+                    timeout=0.5,
                 )
             except asyncio.TimeoutError:
                 continue
