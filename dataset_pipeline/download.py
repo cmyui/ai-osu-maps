@@ -693,23 +693,26 @@ async def download_all(
             )
 
             _reset_mirror_stats()
+            t_chunk = time.monotonic()
             success, failed = await download_chunk(
                 chunk,
                 output_dir,
                 client,
                 force=force,
             )
+            chunk_secs = time.monotonic() - t_chunk
             total_success += success
             all_failed.extend(failed)
 
             new_downloads = success - cached
             logger.info(
-                "Chunk %d/%d complete: %d success (%d new), %d failed",
+                "Chunk %d/%d complete: %d success (%d new), %d failed [%.1fs]",
                 chunk_num,
                 total_chunks,
                 success,
                 new_downloads,
                 len(failed),
+                chunk_secs,
             )
             if MIRROR_STATS:
                 _log_mirror_stats()
