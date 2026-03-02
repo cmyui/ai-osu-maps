@@ -526,6 +526,7 @@ async def run(
     dataset_dir: str,
     *,
     set_ids_file: str | None = None,
+    offset: int = 0,
     limit: int = 100,
     chunk_size: int = CHUNK_SIZE,
     dry_run: bool = False,
@@ -545,9 +546,10 @@ async def run(
                 parts = line.strip().split()
                 if parts and parts[0].isdigit():
                     sets_to_download.append(int(parts[0]))
-        sets_to_download = sets_to_download[:limit]
+        sets_to_download = sets_to_download[offset : offset + limit]
         logger.info(
-            "Loaded %d beatmapset IDs from %s", len(sets_to_download), set_ids_path
+            "Loaded %d beatmapset IDs from %s (offset=%d, limit=%d)",
+            len(sets_to_download), set_ids_path, offset, limit,
         )
     else:
         logger.info("Listing beatmap IDs from S3...")
@@ -575,6 +577,7 @@ async def run(
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Download beatmap sets for training")
     parser.add_argument("--dataset-dir", type=str, default="dataset")
+    parser.add_argument("--offset", type=int, default=0, help="Skip first N beatmap sets")
     parser.add_argument(
         "--limit", type=int, default=100, help="Max beatmap sets to download"
     )
@@ -602,6 +605,7 @@ if __name__ == "__main__":
         run(
             args.dataset_dir,
             set_ids_file=args.set_ids_file,
+            offset=args.offset,
             limit=args.limit,
             chunk_size=args.chunk_size,
             dry_run=args.dry_run,
