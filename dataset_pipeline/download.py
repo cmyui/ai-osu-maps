@@ -23,10 +23,10 @@ logger = logging.getLogger(__name__)
 BEATMAPS_API = "https://beatmaps.akatsuki.gg"
 OSZ_MIRRORS = [
     # "https://catboy.best/d/{set_id}",  # down as of 2026-03-01
-    "https://api.nerinyan.moe/d/{set_id}",
     "https://osu.direct/api/d/{set_id}",
-    "https://dl.sayobot.cn/beatmaps/download/full/{set_id}",
+    "https://api.nerinyan.moe/d/{set_id}",
     "https://storage.ripple.moe/d/{set_id}",
+    "https://dl.sayobot.cn/beatmaps/download/full/{set_id}",
 ]
 AUDIO_EXTENSIONS = {".mp3", ".ogg", ".wav", ".flac"}
 ZIP_MAGIC = b"PK\x03\x04"
@@ -43,9 +43,9 @@ MINO_RATELIMIT_KEY = "REDACTED"
 
 MIRROR_CONCURRENCY = {
     # "catboy.best": 2,
-    "api.nerinyan.moe": 1,
-    "osu.direct": 1,
-    "dl.sayobot.cn": 1,
+    "api.nerinyan.moe": 2,
+    "osu.direct": 2,
+    "dl.sayobot.cn": 2,
     "storage.ripple.moe": 1,
 }
 
@@ -304,20 +304,11 @@ async def _download_osz(
     beatmapset_id: int,
     client: httpx.AsyncClient,
 ) -> bytes | None:
-    """Try downloading .osz from all mirrors concurrently."""
-    tasks = [
-        asyncio.create_task(_try_mirror(beatmapset_id, template, client))
-        for template in OSZ_MIRRORS
-    ]
-
-    for coro in asyncio.as_completed(tasks):
-        result = await coro
+    """Try downloading .osz from mirrors sequentially (fallback on failure)."""
+    for template in OSZ_MIRRORS:
+        result = await _try_mirror(beatmapset_id, template, client)
         if result is not None:
-            for task in tasks:
-                if not task.done():
-                    task.cancel()
             return result
-
     return None
 
 
@@ -423,7 +414,7 @@ async def download_and_extract(
     return await asyncio.to_thread(_extract_osz, content, song_dir)
 
 
-MAX_CONCURRENT_DOWNLOADS_PER_CHUNK = 8
+MAX_CONCURRENT_DOWNLOADS_PER_CHUNK = 4
 
 
 async def download_chunk(
