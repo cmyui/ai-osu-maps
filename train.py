@@ -3,13 +3,16 @@ import copy
 import logging
 import math
 import os
+from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
+from typing import Any
 
 import torch
 import torch.distributed as dist
 import torch.nn as nn
 import wandb
+from torch.amp import autocast  # type: ignore[attr-defined]
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data import DataLoader
 from torch.utils.data.distributed import DistributedSampler
@@ -18,8 +21,11 @@ from ai_osu_maps.config import ModelConfig
 from ai_osu_maps.config import TrainingConfig
 from ai_osu_maps.data.dataset import BeatmapDataset
 from ai_osu_maps.data.dataset import collate_fn
+from ai_osu_maps.data.dataset import split_song_dirs
 from ai_osu_maps.data.tokenizer import Tokenizer
+from ai_osu_maps.data.tokenizer import build_token_weight_mask
 from ai_osu_maps.model.transformer import Transformer
+from ai_osu_maps.validation.loop import run_validation
 
 logger = logging.getLogger(__name__)
 
@@ -41,7 +47,7 @@ def _is_main_process() -> bool:
 
 
 @contextmanager
-def _maybe_no_sync(model: nn.Module, skip_sync: bool):
+def _maybe_no_sync(model: nn.Module, skip_sync: bool) -> Iterator[None]:
     if skip_sync and isinstance(model, DDP):
         with model.no_sync():
             yield
@@ -100,6 +106,24 @@ def parse_args() -> argparse.Namespace:
         help="Train on random time windows of this duration (seconds). "
         "Slices both tokens and audio features to the window.",
     )
+    parser.add_argument(
+        "--eval-every",
+        type=int,
+        default=5,
+        help="Run validation every N epochs (default: 5)",
+    )
+    parser.add_argument(
+        "--n-generate",
+        type=int,
+        default=4,
+        help="Number of samples to generate during validation (default: 4)",
+    )
+    parser.add_argument(
+        "--val-fraction",
+        type=float,
+        default=0.1,
+        help="Fraction of song dirs for validation (default: 0.1)",
+    )
     return parser.parse_args()
 
 
@@ -141,7 +165,7 @@ def save_checkpoint(
     global_step: int,
     model_config: ModelConfig,
     training_config: TrainingConfig,
-    audio_encoder_state: dict | None = None,
+    audio_encoder_state: dict[str, torch.Tensor] | None = None,
 ) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     ckpt = {
@@ -168,73 +192,6 @@ def cleanup_old_checkpoints(checkpoint_dir: Path, keep: int) -> None:
     for old_ckpt in to_remove:
         old_ckpt.unlink()
         logger.info("Removed old checkpoint %s", old_ckpt)
-
-
-def build_token_weight_mask(
-    token_ids: torch.Tensor,
-    tokenizer: Tokenizer,
-    rhythm_weight: float,
-    object_weight: float,
-    position_weight: float,
-) -> torch.Tensor:
-    """Build per-token loss weight mask with higher weight on important tokens.
-
-    Args:
-        token_ids: (B, S) target token IDs
-        tokenizer: Tokenizer instance
-        rhythm_weight: Weight multiplier for rhythm/timing tokens
-        object_weight: Weight multiplier for hit object tokens
-        position_weight: Weight multiplier for position tokens
-
-    Returns:
-        weights: (B, S) loss weight mask
-    """
-    from ai_osu_maps.data.event import EventType
-
-    weights = torch.ones_like(token_ids, dtype=torch.float32)
-
-    def _range(event_type: EventType) -> tuple[int, int]:
-        return tokenizer.event_type_range(event_type)
-
-    # Rhythm/timing tokens (excludes TIME_SHIFT — its frequency is high enough
-    # that upweighting it causes the model to over-predict it)
-    snap_start, snap_end = _range(EventType.SNAPPING)
-    beat_start, beat_end = _range(EventType.BEAT)
-    measure_start, measure_end = _range(EventType.MEASURE)
-    tp_start, tp_end = _range(EventType.TIMING_POINT)
-
-    is_rhythm = (
-        ((token_ids >= snap_start) & (token_ids <= snap_end))
-        | ((token_ids >= beat_start) & (token_ids <= beat_end))
-        | ((token_ids >= measure_start) & (token_ids <= measure_end))
-        | ((token_ids >= tp_start) & (token_ids <= tp_end))
-    )
-    weights[is_rhythm] = rhythm_weight
-
-    # Object tokens
-    circle_start, circle_end = _range(EventType.CIRCLE)
-    sh_start, sh_end = _range(EventType.SLIDER_HEAD)
-    spinner_start, spinner_end = _range(EventType.SPINNER)
-    se_start, se_end = _range(EventType.SLIDER_END)
-
-    is_object = (
-        ((token_ids >= circle_start) & (token_ids <= circle_end))
-        | ((token_ids >= sh_start) & (token_ids <= sh_end))
-        | ((token_ids >= spinner_start) & (token_ids <= spinner_end))
-        | ((token_ids >= se_start) & (token_ids <= se_end))
-    )
-    weights[is_object] = object_weight
-
-    # Position tokens
-    pos_start, pos_end = _range(EventType.POS)
-    dist_start, dist_end = _range(EventType.DISTANCE)
-
-    is_position = ((token_ids >= pos_start) & (token_ids <= pos_end)) | (
-        (token_ids >= dist_start) & (token_ids <= dist_end)
-    )
-    weights[is_position] = position_weight
-
-    return weights
 
 
 def train(args: argparse.Namespace) -> None:
@@ -294,6 +251,15 @@ def train(args: argparse.Namespace) -> None:
                 "training": vars(training_config),
             },
         )
+        wandb.define_metric("val/loss", summary="min")
+        wandb.define_metric("val/loss_unweighted", summary="min")
+        wandb.define_metric("val/perplexity", summary="min")
+        wandb.define_metric("val/count_loss", summary="min")
+        wandb.define_metric("val/nll_timing", summary="min")
+        wandb.define_metric("val/nll_objects", summary="min")
+        wandb.define_metric("val/nll_position", summary="min")
+        wandb.define_metric("gen/monotonic_time_frac", summary="max")
+        wandb.define_metric("gen/eos_frac", summary="max")
 
     # Load audio encoder state (saved by precompute_audio.py)
     audio_encoder_state = None
@@ -315,23 +281,39 @@ def train(args: argparse.Namespace) -> None:
     tokenizer = Tokenizer()
     logger.info("Vocab size: %d", tokenizer.vocab_size)
 
-    # Dataset
+    # Dataset: train/val split by song directory
+    train_dirs, val_dirs = split_song_dirs(
+        args.dataset_dir,
+        val_fraction=args.val_fraction,
+        max_maps=args.max_maps,
+    )
+    logger.info("Song dirs: %d train, %d val", len(train_dirs), len(val_dirs))
+
     dataset = BeatmapDataset(
         args.dataset_dir,
         tokenizer,
         max_seq_len=model_config.max_seq_len,
-        max_maps=args.max_maps,
         window_sec=args.window_sec,
+        song_dirs=train_dirs,
     )
-    logger.info("Dataset: %d beatmaps", len(dataset))
+    logger.info("Train dataset: %d beatmaps", len(dataset))
     if len(dataset) == 0:
         logger.error("No beatmaps found in %s", args.dataset_dir)
         return
 
+    val_dataset = BeatmapDataset(
+        args.dataset_dir,
+        tokenizer,
+        max_seq_len=model_config.max_seq_len,
+        window_sec=args.window_sec,
+        song_dirs=val_dirs,
+    )
+    logger.info("Val dataset: %d beatmaps", len(val_dataset))
+
     effective_batch_size = min(training_config.batch_size, len(dataset))
     num_workers = training_config.num_workers if device.type == "cuda" else 0
 
-    sampler = None
+    sampler: DistributedSampler[dict[str, torch.Tensor]] | None = None
     if distributed:
         sampler = DistributedSampler(dataset, shuffle=True)
 
@@ -346,8 +328,18 @@ def train(args: argparse.Namespace) -> None:
         drop_last=True,
     )
 
+    val_batch_size = min(training_config.batch_size, max(len(val_dataset), 1))
+    val_loader = DataLoader(
+        val_dataset,
+        batch_size=val_batch_size,
+        shuffle=False,
+        num_workers=0,
+        collate_fn=collate_fn,
+        pin_memory=(device.type == "cuda"),
+    )
+
     # Model
-    model = Transformer(
+    base_model = Transformer(
         vocab_size=tokenizer.vocab_size,
         d_model=model_config.d_model,
         n_heads=model_config.n_heads,
@@ -359,8 +351,9 @@ def train(args: argparse.Namespace) -> None:
         n_text_tokens=model_config.n_text_tokens,
         num_mappers=model_config.num_mappers,
     ).to(device)
+    model: Transformer | DDP = base_model
 
-    ema_model = copy.deepcopy(model)
+    ema_model: Transformer = copy.deepcopy(base_model)
     ema_model.requires_grad_(False)
 
     param_count = sum(p.numel() for p in model.parameters())
@@ -369,12 +362,19 @@ def train(args: argparse.Namespace) -> None:
     # Resume (load into unwrapped model before DDP wrapping)
     start_epoch = 0
     global_step = 0
+    resume_optimizer_state: dict[str, object] | None = None
     if args.resume:
-        ckpt = torch.load(args.resume, map_location=device, weights_only=False)
+        ckpt: dict[str, Any] = torch.load(
+            args.resume,
+            map_location=device,
+            weights_only=False,
+        )
         model.load_state_dict(ckpt["model_state_dict"])
         ema_model.load_state_dict(ckpt["ema_state_dict"])
         start_epoch = ckpt["epoch"] + 1
         global_step = ckpt["global_step"]
+        resume_optimizer_state = ckpt["optimizer_state_dict"]
+
         logger.info("Resumed from epoch %d, step %d", start_epoch, global_step)
 
     # Wrap in DDP after loading weights
@@ -389,8 +389,8 @@ def train(args: argparse.Namespace) -> None:
         betas=training_config.betas,
     )
 
-    if args.resume:
-        optimizer.load_state_dict(ckpt["optimizer_state_dict"])
+    if resume_optimizer_state is not None:
+        optimizer.load_state_dict(resume_optimizer_state)
 
     total_steps = training_config.max_epochs * len(dataloader)
     min_lr_ratio = training_config.min_lr / training_config.lr
@@ -415,6 +415,7 @@ def train(args: argparse.Namespace) -> None:
         model.train()
         epoch_loss = 0.0
         epoch_steps = 0
+        grad_norm = torch.tensor(0.0)
         optimizer.zero_grad()
 
         for batch_idx, batch in enumerate(dataloader):
@@ -450,7 +451,7 @@ def train(args: argparse.Namespace) -> None:
             ) != len(dataloader)
 
             with _maybe_no_sync(model, skip_sync=is_accum_step):
-                with torch.amp.autocast(
+                with autocast(
                     device.type,
                     dtype=autocast_dtype,
                     enabled=use_autocast,
@@ -501,7 +502,7 @@ def train(args: argparse.Namespace) -> None:
                 loss.backward()
 
             if not is_accum_step:
-                torch.nn.utils.clip_grad_norm_(
+                grad_norm = torch.nn.utils.clip_grad_norm_(
                     model.parameters(),
                     training_config.gradient_clip_norm,
                 )
@@ -543,9 +544,10 @@ def train(args: argparse.Namespace) -> None:
                 if wandb_run:
                     wandb_run.log(
                         {
-                            "loss": loss.item() * accum_steps,
-                            "avg_loss": avg_loss,
-                            "count_loss": count_loss.item(),
+                            "train/loss": loss.item() * accum_steps,
+                            "train/avg_loss": avg_loss,
+                            "train/count_loss": count_loss.item(),
+                            "train/grad_norm": grad_norm.item(),
                             "lr": current_lr,
                             "epoch": epoch,
                         },
@@ -576,6 +578,21 @@ def train(args: argparse.Namespace) -> None:
                     Path(training_config.checkpoint_dir),
                     args.keep_checkpoints,
                 )
+
+        # Validation
+        if is_main and len(val_dataset) > 0 and (epoch + 1) % args.eval_every == 0:
+            val_metrics = run_validation(
+                ema_model,
+                val_loader,
+                val_dataset,
+                tokenizer,
+                training_config,
+                device,
+                n_generate=args.n_generate,
+                max_generate_tokens=512,
+            )
+            if wandb_run:
+                wandb_run.log(val_metrics, step=global_step)
 
     if distributed:
         dist.destroy_process_group()

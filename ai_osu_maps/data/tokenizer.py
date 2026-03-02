@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import torch
+
 from ai_osu_maps.data.event import Event
 from ai_osu_maps.data.event import EventRange
 from ai_osu_maps.data.event import EventType
@@ -123,3 +125,68 @@ class Tokenizer:
         x = gx * POSITION_PRECISION
         y = gy * POSITION_PRECISION
         return x, y
+
+
+def build_token_weight_mask(
+    token_ids: torch.Tensor,
+    tokenizer: Tokenizer,
+    rhythm_weight: float,
+    object_weight: float,
+    position_weight: float,
+) -> torch.Tensor:
+    """Build per-token loss weight mask with higher weight on important tokens.
+
+    Args:
+        token_ids: (B, S) target token IDs
+        tokenizer: Tokenizer instance
+        rhythm_weight: Weight multiplier for rhythm/timing tokens
+        object_weight: Weight multiplier for hit object tokens
+        position_weight: Weight multiplier for position tokens
+
+    Returns:
+        weights: (B, S) loss weight mask
+    """
+    weights = torch.ones_like(token_ids, dtype=torch.float32)
+
+    def _range(event_type: EventType) -> tuple[int, int]:
+        return tokenizer.event_type_range(event_type)
+
+    # Rhythm/timing tokens (excludes TIME_SHIFT — its frequency is high enough
+    # that upweighting it causes the model to over-predict it)
+    snap_start, snap_end = _range(EventType.SNAPPING)
+    beat_start, beat_end = _range(EventType.BEAT)
+    measure_start, measure_end = _range(EventType.MEASURE)
+    tp_start, tp_end = _range(EventType.TIMING_POINT)
+
+    is_rhythm = (
+        ((token_ids >= snap_start) & (token_ids <= snap_end))
+        | ((token_ids >= beat_start) & (token_ids <= beat_end))
+        | ((token_ids >= measure_start) & (token_ids <= measure_end))
+        | ((token_ids >= tp_start) & (token_ids <= tp_end))
+    )
+    weights[is_rhythm] = rhythm_weight
+
+    # Object tokens
+    circle_start, circle_end = _range(EventType.CIRCLE)
+    sh_start, sh_end = _range(EventType.SLIDER_HEAD)
+    spinner_start, spinner_end = _range(EventType.SPINNER)
+    se_start, se_end = _range(EventType.SLIDER_END)
+
+    is_object = (
+        ((token_ids >= circle_start) & (token_ids <= circle_end))
+        | ((token_ids >= sh_start) & (token_ids <= sh_end))
+        | ((token_ids >= spinner_start) & (token_ids <= spinner_end))
+        | ((token_ids >= se_start) & (token_ids <= se_end))
+    )
+    weights[is_object] = object_weight
+
+    # Position tokens
+    pos_start, pos_end = _range(EventType.POS)
+    dist_start, dist_end = _range(EventType.DISTANCE)
+
+    is_position = ((token_ids >= pos_start) & (token_ids <= pos_end)) | (
+        (token_ids >= dist_start) & (token_ids <= dist_end)
+    )
+    weights[is_position] = position_weight
+
+    return weights

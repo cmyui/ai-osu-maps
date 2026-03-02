@@ -18,7 +18,47 @@ BEATMAP_TOKENS_FILENAME = "beatmap_tokens.pt"
 MERT_FRAME_RATE_HZ = 75
 
 
-class BeatmapDataset(Dataset):
+def split_song_dirs(
+    dataset_dir: str,
+    *,
+    val_fraction: float = 0.1,
+    max_maps: int | None = None,
+    seed: int = 42,
+) -> tuple[list[Path], list[Path]]:
+    """Split song directories into train/val sets.
+
+    Splits by song directory (not by beatmap) to prevent audio feature leakage.
+    Uses a seeded shuffle for deterministic, reproducible splits.
+
+    Returns:
+        (train_dirs, val_dirs) lists of Path objects.
+    """
+    dataset_path = Path(dataset_dir)
+    all_dirs = []
+
+    for song_dir in sorted(dataset_path.iterdir()):
+        if not song_dir.is_dir():
+            continue
+        if not (song_dir / AUDIO_FEATURES_FILENAME).exists():
+            continue
+        if not (song_dir / BEATMAP_TOKENS_FILENAME).exists():
+            continue
+        all_dirs.append(song_dir)
+
+    if max_maps is not None:
+        all_dirs = all_dirs[:max_maps]
+
+    rng = random.Random(seed)
+    rng.shuffle(all_dirs)
+
+    n_val = max(1, int(len(all_dirs) * val_fraction))
+    val_dirs = all_dirs[:n_val]
+    train_dirs = all_dirs[n_val:]
+
+    return train_dirs, val_dirs
+
+
+class BeatmapDataset(Dataset[dict[str, torch.Tensor]]):
     """Dataset for autoregressive beatmap generation.
 
     Loads pre-computed audio features and pre-tokenized beatmaps.
@@ -46,44 +86,61 @@ class BeatmapDataset(Dataset):
         max_seq_len: int = 2048,
         max_maps: int | None = None,
         window_sec: float | None = None,
+        song_dirs: list[Path] | None = None,
     ) -> None:
         self.tokenizer = tokenizer
         self.max_seq_len = max_seq_len
         self.window_sec = window_sec
 
         self.samples: list[tuple[Path, int]] = []  # (song_dir, beatmap_index)
-        dataset_path = Path(dataset_dir)
-        skipped_no_audio = 0
-        skipped_no_tokens = 0
-        maps_used = 0
 
-        for song_dir in sorted(dataset_path.iterdir()):
-            if not song_dir.is_dir():
-                continue
+        if song_dirs is not None:
+            # Use pre-split song directories
+            for song_dir in song_dirs:
+                token_cache = song_dir / BEATMAP_TOKENS_FILENAME
+                beatmaps = torch.load(token_cache, weights_only=False)
+                for i in range(len(beatmaps)):
+                    self.samples.append((song_dir, i))
+        else:
+            # Scan dataset directory
+            dataset_path = Path(dataset_dir)
+            skipped_no_audio = 0
+            skipped_no_tokens = 0
+            maps_used = 0
 
-            if max_maps is not None and maps_used >= max_maps:
-                break
+            for song_dir in sorted(dataset_path.iterdir()):
+                if not song_dir.is_dir():
+                    continue
 
-            audio_cache = song_dir / AUDIO_FEATURES_FILENAME
-            if not audio_cache.exists():
-                skipped_no_audio += 1
-                continue
+                if max_maps is not None and maps_used >= max_maps:
+                    break
 
-            token_cache = song_dir / BEATMAP_TOKENS_FILENAME
-            if not token_cache.exists():
-                skipped_no_tokens += 1
-                continue
+                audio_cache = song_dir / AUDIO_FEATURES_FILENAME
+                if not audio_cache.exists():
+                    skipped_no_audio += 1
+                    continue
 
-            beatmaps = torch.load(token_cache, weights_only=False)
-            for i in range(len(beatmaps)):
-                self.samples.append((song_dir, i))
+                token_cache = song_dir / BEATMAP_TOKENS_FILENAME
+                if not token_cache.exists():
+                    skipped_no_tokens += 1
+                    continue
 
-            maps_used += 1
+                beatmaps = torch.load(token_cache, weights_only=False)
+                for i in range(len(beatmaps)):
+                    self.samples.append((song_dir, i))
 
-        if skipped_no_audio > 0:
-            logger.info("Skipped %d song dirs without audio features", skipped_no_audio)
-        if skipped_no_tokens > 0:
-            logger.info("Skipped %d song dirs without token cache", skipped_no_tokens)
+                maps_used += 1
+
+            if skipped_no_audio > 0:
+                logger.info(
+                    "Skipped %d song dirs without audio features",
+                    skipped_no_audio,
+                )
+            if skipped_no_tokens > 0:
+                logger.info(
+                    "Skipped %d song dirs without token cache",
+                    skipped_no_tokens,
+                )
 
     def __len__(self) -> int:
         return len(self.samples)

@@ -40,6 +40,7 @@ python generate_dataset.py \
 ```
 
 Runs all three preparation stages sequentially:
+
 1. **Download** — fetches .osz archives from mirror sites, extracts audio + .osu files
 2. **Precompute audio** — runs MERT on each song's audio, saves `audio_features.pt` per directory
 3. **Precompute tokens** — parses .osu files into tokenized beatmaps, saves `beatmap_tokens.pt` per directory
@@ -47,6 +48,7 @@ Runs all three preparation stages sequentially:
 Each stage is idempotent (completed work is skipped), so re-running is safe and fast.
 
 Options:
+
 - `--set_ids_file`: CSV with beatmapset_id in first column (bypasses S3 lookup)
 - `--device`: Torch device for audio encoding (default: cuda if available, else cpu)
 - `--force`: Recompute cached audio features and tokens
@@ -55,6 +57,7 @@ Options:
 - `--chunk_size`: Download chunk size (default: 200)
 
 Individual stages can also be run standalone:
+
 ```bash
 python -m dataset_pipeline.download --dataset_dir dataset --set_ids_file top_beatmapsets.csv --limit 10000
 
@@ -140,12 +143,25 @@ Project: `/home/josh/ai-osu-maps/`
 Commands must be sent through ssh → cmd → wsl, which causes quoting issues. Use scp to `/tmp/` on Windows, then `wsl -- bash /mnt/c/tmp/script.sh`.
 
 Typical tmux session:
+
 ```bash
 tmux new-session -d -s osumaps -n cache "... precompute_audio.py ..."
 tmux new-window -t osumaps -n train "... train.py ..."
 ```
 
 Keep the WSL instance alive with `exec sleep infinity` at the end of the setup script.
+
+## Code quality
+
+Pre-commit hooks handle formatting and linting. Run before committing:
+
+```bash
+pre-commit run --all-files
+```
+
+Hooks (in order): trailing-whitespace, end-of-file-fixer, black (formatter), pyupgrade (py311+), isort (single-line imports, black profile), add-trailing-comma, blacken-docs, import-analyzer, codespell, mypy (strict mode).
+
+Mypy is configured in `mypy.ini` with `strict = True`. Third-party libraries without stubs (transformers, slider, wandb, sentence_transformers) have `ignore_missing_imports = True`.
 
 ## Key files
 
