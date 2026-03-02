@@ -62,22 +62,23 @@ This project depends on a [fork of slider](https://github.com/cmyui/slider) (an 
 
 ### Beatmapset ID list
 
-The download pipeline needs a list of beatmapset IDs as a TSV file with `beatmapset_id` in the first column (additional columns are ignored):
+The download pipeline needs a list of beatmapset IDs as a CSV file with `beatmapset_id` in the first column (additional columns are ignored):
 
-```tsv
-1073074
-1495669
-765778
+```csv
+beatmapset_id,play_count
+1073074,40883
+1495669,36973
+765778,32131
 ```
 
-A sample `top_beatmapsets.tsv` is included in the repo, containing the most popular beatmapsets from [Akatsuki](https://akatsuki.gg)'s vanilla osu! leaderboards. You can use it directly or supply your own list sourced from the [osu! API](https://osu.ppy.sh/docs/index.html) or community databases.
+A sample `top_beatmapsets.csv` is included in the repo, containing the most popular beatmapsets from [Akatsuki](https://akatsuki.gg)'s vanilla osu! leaderboards. You can use it directly or supply your own list sourced from the [osu! API](https://osu.ppy.sh/docs/index.html) or community databases.
 
 ### Generate dataset (unified)
 
 ```bash
 python generate_dataset.py \
   --dataset_dir dataset \
-  --set_ids_file top_beatmapsets.tsv \
+  --set_ids_file top_beatmapsets.csv \
   --limit 10000 \
   --device cuda
 ```
@@ -93,7 +94,7 @@ Each stage is idempotent (completed work is skipped), so re-running is safe.
 Options:
 | Flag | Description |
 |------|-------------|
-| `--set_ids_file` | TSV with beatmapset_id in first column |
+| `--set_ids_file` | CSV with beatmapset_id in first column |
 | `--device` | Torch device for audio encoding (default: cuda if available) |
 | `--force` | Recompute cached audio features and tokens |
 | `--dry_run` | List downloads without fetching |
@@ -103,7 +104,7 @@ Options:
 Individual stages can also be run standalone:
 
 ```bash
-python -m dataset_pipeline.download --dataset_dir dataset --set_ids_file top_beatmapsets.tsv --limit 10000
+python -m dataset_pipeline.download --dataset_dir dataset --set_ids_file top_beatmapsets.csv --limit 10000
 
 # Single GPU
 python -m dataset_pipeline.precompute_audio --dataset_dir dataset --device cuda

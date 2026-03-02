@@ -12,14 +12,14 @@ Usage:
     # Single GPU
     python generate_dataset.py \
         --dataset-dir dataset \
-        --set-ids-file top_beatmapsets.tsv \
+        --set-ids-file top_beatmapsets.csv \
         --limit 10000 \
         --device cuda
 
     # Multi-GPU (audio precompute uses all GPUs; download/tokens run on rank 0 only)
     torchrun --nproc_per_node=2 generate_dataset.py \
         --dataset-dir dataset \
-        --set-ids-file top_beatmapsets.tsv \
+        --set-ids-file top_beatmapsets.csv \
         --limit 10000
 """
 
@@ -49,7 +49,7 @@ def parse_args() -> argparse.Namespace:
         "--set-ids-file",
         type=str,
         default=None,
-        help="TSV file with beatmapset_id in first column (skips S3/Cheesegull)",
+        help="CSV file with beatmapset_id in first column (skips S3/Cheesegull)",
     )
     parser.add_argument("--download-offset", type=int, default=0, help="Skip first N beatmap sets")
     parser.add_argument(

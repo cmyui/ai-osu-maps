@@ -34,7 +34,7 @@ If `audio_encoder.pt` is missing or features were precomputed with different enc
 ```bash
 python generate_dataset.py \
   --dataset_dir dataset \
-  --set_ids_file top_beatmapsets.tsv \
+  --set_ids_file top_beatmapsets.csv \
   --limit 10000 \
   --device cuda
 ```
@@ -47,7 +47,7 @@ Runs all three preparation stages sequentially:
 Each stage is idempotent (completed work is skipped), so re-running is safe and fast.
 
 Options:
-- `--set_ids_file`: TSV with beatmapset_id in first column (bypasses S3 lookup)
+- `--set_ids_file`: CSV with beatmapset_id in first column (bypasses S3 lookup)
 - `--device`: Torch device for audio encoding (default: cuda if available, else cpu)
 - `--force`: Recompute cached audio features and tokens
 - `--dry_run`: List downloads without fetching (skips precompute stages)
@@ -56,7 +56,7 @@ Options:
 
 Individual stages can also be run standalone:
 ```bash
-python -m dataset_pipeline.download --dataset_dir dataset --set_ids_file top_beatmapsets.tsv --limit 10000
+python -m dataset_pipeline.download --dataset_dir dataset --set_ids_file top_beatmapsets.csv --limit 10000
 
 # Single GPU
 python -m dataset_pipeline.precompute_audio --dataset_dir dataset --device cuda

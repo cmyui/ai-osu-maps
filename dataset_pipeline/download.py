@@ -9,6 +9,7 @@ Usage:
 
 import argparse
 import asyncio
+import csv
 import enum
 import io
 import logging
@@ -778,10 +779,9 @@ async def run(
         set_ids_path = Path(set_ids_file)
         sets_to_download = []
         with open(set_ids_path) as f:
-            for line in f:
-                parts = line.strip().split()
-                if parts and parts[0].isdigit():
-                    sets_to_download.append(int(parts[0]))
+            for row in csv.reader(f):
+                if row and row[0].isdigit():
+                    sets_to_download.append(int(row[0]))
         sets_to_download = sets_to_download[offset : offset + limit]
         logger.info(
             "Loaded %d beatmapset IDs from %s (offset=%d, limit=%d)",
@@ -832,7 +832,7 @@ def parse_args() -> argparse.Namespace:
         "--set-ids-file",
         type=str,
         default=None,
-        help="TSV file with beatmapset_id in first column (skips S3/Cheesegull)",
+        help="CSV file with beatmapset_id in first column (skips S3/Cheesegull)",
     )
     return parser.parse_args()
 
